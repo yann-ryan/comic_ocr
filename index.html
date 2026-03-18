@@ -1,0 +1,1286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>💥 COMIC OCR — Browser Edition</title>
+
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=Bangers&family=Comic+Neue:wght@400;700&family=Permanent+Marker&display=swap" rel="stylesheet">
+
+<!-- Pyodide -->
+<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+
+<!-- Tesseract.js -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<style>
+:root {
+    --ink: #1a1a1a;
+    --red: #e63946;
+    --yellow: #ffd60a;
+    --cream: #fff9e6;
+    --dot: #e0c97a;
+    --shadow: 4px 4px 0 var(--ink);
+    --shadow-sm: 3px 3px 0 var(--ink);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; color: var(--ink); }
+
+body {
+    font-family: 'Comic Neue', cursive;
+    background-color: var(--cream);
+    background-image: radial-gradient(circle, var(--dot) 1.2px, transparent 1.2px);
+    background-size: 18px 18px;
+    min-height: 100vh;
+    padding: 20px;
+}
+
+/* ── Title ── */
+.title {
+    font-family: 'Bangers', cursive;
+    font-size: clamp(2.5rem, 6vw, 4rem);
+    letter-spacing: 4px;
+    text-shadow: 5px 5px 0 var(--red), 7px 7px 0 var(--ink);
+    text-align: center;
+    line-height: 1;
+    margin-bottom: 6px;
+}
+.subtitle {
+    display: inline-block;
+    background: white;
+    border: 3px solid var(--ink);
+    border-radius: 20px;
+    padding: 5px 18px;
+    font-weight: 700;
+    font-size: 1rem;
+    box-shadow: var(--shadow-sm);
+    position: relative;
+    margin-bottom: 24px;
+}
+.subtitle::before {
+    content: '';
+    position: absolute;
+    top: -15px; left: 28px;
+    border: 8px solid transparent;
+    border-bottom-color: var(--ink);
+}
+.subtitle::after {
+    content: '';
+    position: absolute;
+    top: -9px; left: 30px;
+    border: 7px solid transparent;
+    border-bottom-color: white;
+}
+header { text-align: center; margin-bottom: 20px; }
+
+/* ── Layout ── */
+.main-grid {
+    display: grid;
+    grid-template-columns: 340px 1fr;
+    gap: 20px;
+    max-width: 1300px;
+    margin: 0 auto;
+}
+@media (max-width: 800px) {
+    .main-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Panels ── */
+.panel {
+    background: #fffef7;
+    border: 3px solid var(--ink);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+    padding: 16px;
+    margin-bottom: 16px;
+}
+.panel-title {
+    font-family: 'Bangers', cursive;
+    font-size: 1.3rem;
+    letter-spacing: 2px;
+    background: var(--red);
+    color: white;
+    padding: 3px 12px;
+    margin: -16px -16px 14px -16px;
+    border-bottom: 3px solid var(--ink);
+    display: block;
+}
+
+/* ── Upload zone ── */
+.upload-zone {
+    border: 3px dashed var(--ink);
+    border-radius: 4px;
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    background: repeating-linear-gradient(
+        45deg, #fffef7, #fffef7 8px, var(--cream) 8px, var(--cream) 16px
+    );
+    transition: background 0.15s;
+    position: relative;
+}
+.upload-zone:hover { background: #fff3c4; }
+.upload-zone input {
+    position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%;
+}
+.upload-icon { font-size: 2.5rem; display: block; margin-bottom: 8px; }
+.upload-label { font-weight: 700; font-size: 0.95rem; }
+.upload-hint { font-size: 0.8rem; opacity: 0.7; margin-top: 4px; }
+
+/* ── Form controls ── */
+label.field-label {
+    display: block;
+    font-weight: 700;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+    margin-top: 12px;
+}
+input[type="range"] {
+    width: 100%;
+    accent-color: var(--red);
+    cursor: pointer;
+}
+.slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.slider-val {
+    font-family: 'Permanent Marker', cursive;
+    font-size: 0.9rem;
+    min-width: 40px;
+    text-align: right;
+    color: var(--red);
+}
+select, input[type="text"] {
+    width: 100%;
+    padding: 6px 10px;
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    background: #fffff8;
+    font-family: 'Comic Neue', cursive;
+    font-size: 0.9rem;
+    box-shadow: inset 1px 1px 0 #ccc;
+}
+.radio-group { display: flex; gap: 12px; margin-top: 4px; }
+.radio-group label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 4px 10px;
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    background: white;
+    box-shadow: 2px 2px 0 var(--ink);
+    transition: transform 0.08s;
+}
+.radio-group label:hover { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink); }
+.radio-group input[type="radio"] { accent-color: var(--red); }
+
+/* ── Buttons ── */
+.btn-run {
+    width: 100%;
+    margin-top: 16px;
+    padding: 14px;
+    font-family: 'Bangers', cursive;
+    font-size: 1.8rem;
+    letter-spacing: 4px;
+    background: var(--red);
+    color: white;
+    border: 3px solid var(--ink);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+    text-shadow: 2px 2px 0 #8b0000;
+    cursor: pointer;
+    transition: transform 0.08s, box-shadow 0.08s;
+}
+.btn-run:hover { transform: translate(2px,2px); box-shadow: 2px 2px 0 var(--ink); }
+.btn-run:active { transform: translate(4px,4px); box-shadow: 0 0 0 var(--ink); }
+.btn-run:disabled {
+    background: #aaa;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: var(--shadow);
+    text-shadow: none;
+}
+
+.btn-download {
+    display: inline-block;
+    padding: 6px 14px;
+    font-family: 'Comic Neue', cursive;
+    font-weight: 700;
+    font-size: 0.85rem;
+    background: var(--yellow);
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+    text-decoration: none;
+    transition: transform 0.08s;
+    margin: 4px 4px 0 0;
+}
+.btn-download:hover { transform: translate(1px,1px); box-shadow: 2px 2px 0 var(--ink); }
+
+/* ── Status ── */
+.status-box {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: #fff9c4;
+    border: 2px dashed var(--red);
+    border-radius: 3px;
+    font-family: 'Permanent Marker', cursive;
+    font-size: 0.85rem;
+    min-height: 44px;
+    line-height: 1.5;
+}
+.status-error { color: var(--red); }
+
+/* ── Progress ── */
+.progress-wrap {
+    margin-top: 10px;
+    background: white;
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    overflow: hidden;
+    height: 18px;
+    display: none;
+}
+.progress-bar {
+    height: 100%;
+    background: repeating-linear-gradient(
+        45deg, var(--red), var(--red) 10px, #c1121f 10px, #c1121f 20px
+    );
+    width: 0%;
+    transition: width 0.3s;
+}
+
+/* ── Canvas / image area ── */
+.canvas-wrap {
+    position: relative;
+    border: 3px solid var(--ink);
+    border-radius: 4px;
+    background: #1a1a1a;
+    overflow: hidden;
+    min-height: 300px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.canvas-placeholder {
+    color: #666;
+    font-family: 'Bangers', cursive;
+    font-size: 1.4rem;
+    letter-spacing: 2px;
+    text-align: center;
+    padding: 40px;
+}
+#output-canvas {
+    max-width: 100%;
+    display: block;
+}
+
+/* ── Transcript ── */
+.transcript-area {
+    width: 100%;
+    min-height: 200px;
+    padding: 12px;
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    background: #fffff8;
+    font-family: 'Comic Neue', cursive;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    resize: vertical;
+    box-shadow: inset 1px 1px 0 #ccc;
+}
+
+/* ── Legend ── */
+.legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.legend-pill {
+    padding: 3px 10px;
+    border: 2px solid var(--ink);
+    border-radius: 3px;
+    font-weight: 700;
+    font-size: 0.78rem;
+    box-shadow: 2px 2px 0 var(--ink);
+    color: white;
+}
+
+/* ── Loading overlay ── */
+#loading-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(255,249,230,0.92);
+    z-index: 1000;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+}
+#loading-overlay.show { display: flex; }
+.loading-title {
+    font-family: 'Bangers', cursive;
+    font-size: 2.5rem;
+    letter-spacing: 4px;
+    text-shadow: 4px 4px 0 var(--red);
+    animation: pulse 1s infinite alternate;
+}
+.loading-sub {
+    font-family: 'Permanent Marker', cursive;
+    font-size: 1rem;
+    color: #555;
+}
+@keyframes pulse {
+    from { opacity: 0.7; transform: scale(0.98); }
+    to   { opacity: 1;   transform: scale(1.02); }
+}
+.spinner {
+    width: 60px; height: 60px;
+    border: 5px solid var(--ink);
+    border-top-color: var(--red);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+    <div class="spinner"></div>
+    <div class="loading-title">LOADING...</div>
+    <div class="loading-sub" id="loading-sub">Initialising Python engine...</div>
+</div>
+
+<header>
+    <div class="title">💥 COMIC OCR 💥</div>
+    <div class="subtitle">100% browser-based — no server needed!</div>
+</header>
+
+<div class="main-grid">
+
+    <!-- ── Left column: controls ── -->
+    <div>
+        <div class="panel">
+            <span class="panel-title">📂 INPUT</span>
+
+            <div class="upload-zone" id="upload-zone">
+                <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.tiff,.tif,.pdf">
+                <span class="upload-icon">🗂</span>
+                <div class="upload-label">Drop comic page here</div>
+                <div class="upload-hint">JPG, PNG, TIFF supported<br>PDF support requires PDF.js</div>
+            </div>
+
+            <div id="file-name" style="margin-top:8px;font-size:0.8rem;font-weight:700;"></div>
+        </div>
+
+        <div class="panel">
+            <span class="panel-title">⚙️ ENGINE</span>
+
+            <label class="field-label">OCR Backend</label>
+            <div class="radio-group">
+                <label><input type="radio" name="ocr" value="tesseract" checked> Tesseract.js</label>
+                <label><input type="radio" name="ocr" value="easyocr" disabled title="Not available in browser"> EasyOCR</label>
+            </div>
+            <div style="font-size:0.75rem;margin-top:4px;opacity:0.7">EasyOCR unavailable in browser (requires PyTorch)</div>
+        </div>
+
+        <div class="panel">
+            <span class="panel-title">🔧 TUNE IT</span>
+
+            <label class="field-label">Bubble Brightness <span style="font-weight:400;text-transform:none">(lower = detect darker bubbles)</span></label>
+            <div class="slider-row">
+                <input type="range" id="brightness" min="150" max="254" value="220" step="5">
+                <span class="slider-val" id="brightness-val">220</span>
+            </div>
+
+            <label class="field-label">Min Panel Size</label>
+            <div class="slider-row">
+                <input type="range" id="panel-area" min="0.005" max="0.1" value="0.02" step="0.005">
+                <span class="slider-val" id="panel-area-val">0.02</span>
+            </div>
+
+            <label class="field-label">NMS Overlap Threshold</label>
+            <div class="slider-row">
+                <input type="range" id="nms" min="0.1" max="0.9" value="0.3" step="0.05">
+                <span class="slider-val" id="nms-val">0.30</span>
+            </div>
+
+            <label class="field-label">Left Edge Exclusion</label>
+            <div class="slider-row">
+                <input type="range" id="left-margin" min="0" max="0.15" value="0.06" step="0.01">
+                <span class="slider-val" id="left-margin-val">0.06</span>
+            </div>
+
+            <label class="field-label">Right Edge Exclusion</label>
+            <div class="slider-row">
+                <input type="range" id="right-margin" min="0" max="0.15" value="0.0" step="0.01">
+                <span class="slider-val" id="right-margin-val">0.00</span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <span class="panel-title">📖 READING ORDER</span>
+
+            <label class="field-label">Region order within panels</label>
+            <div class="radio-group">
+                <label><input type="radio" name="region-order" value="ltr" checked> ↔ Left→Right</label>
+                <label><input type="radio" name="region-order" value="ttb"> ↕ Top→Bottom</label>
+                <label><input type="radio" name="region-order" value="manga"> ↩ Manga (Right→Left)</label>
+            </div>
+
+            <label class="field-label" style="margin-top:12px">Panel order</label>
+            <div class="radio-group">
+                <label><input type="radio" name="panel-order" value="ltr" checked> ↔ Western (L→R rows)</label>
+                <label><input type="radio" name="panel-order" value="manga"> ↩ Manga (R→L rows)</label>
+            </div>
+
+            <div style="font-size:0.75rem;margin-top:8px;opacity:0.7;line-height:1.5">
+                <b>Tip:</b> Most Western comics use Left→Right.<br>
+                Japanese manga reads Right→Left.
+            </div>
+        </div>
+
+        <button class="btn-run" id="run-btn" disabled>⚡ ZAP! RUN OCR ⚡</button>
+
+        <div class="progress-wrap" id="progress-wrap">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="status-box" id="status">Loading Python engine...</div>
+
+        <div class="legend">
+            <span class="legend-pill" style="background:#3b82f6">Panel</span>
+            <span class="legend-pill" style="background:#22c55e">Bubble</span>
+            <span class="legend-pill" style="background:#f97316">Caption</span>
+            <span class="legend-pill" style="background:#6366f1">Floating</span>
+        </div>
+    </div>
+
+    <!-- ── Right column: output ── -->
+    <div>
+        <div class="panel">
+            <span class="panel-title">🔍 DETECTED REGIONS</span>
+            <div class="canvas-wrap" id="canvas-wrap">
+                <div class="canvas-placeholder" id="canvas-placeholder">
+                    Upload a comic page<br>to get started!
+                </div>
+                <canvas id="output-canvas" style="display:none"></canvas>
+            </div>
+        </div>
+
+        <div class="panel">
+            <span class="panel-title">📝 TRANSCRIPT</span>
+            <textarea class="transcript-area" id="transcript" readonly
+                placeholder="Extracted text will appear here in reading order..."></textarea>
+        </div>
+
+        <div class="panel">
+            <span class="panel-title">💾 DOWNLOAD</span>
+            <div id="download-area">
+                <em style="font-size:0.85rem;opacity:0.6">Run OCR first to enable downloads.</em>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════════════════
+let pyodide = null;
+let currentImageData = null;   // original image as ImageData
+let currentResults   = null;   // last pipeline results
+
+// ═══════════════════════════════════════════════════════════════
+// UI helpers
+// ═══════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const setStatus = (msg, isError=false) => {
+    $('status').textContent = msg;
+    $('status').className = 'status-box' + (isError ? ' status-error' : '');
+};
+const setProgress = (pct) => {
+    $('progress-wrap').style.display = pct > 0 ? 'block' : 'none';
+    $('progress-bar').style.width = pct + '%';
+};
+
+// Slider value display
+['brightness','panel-area','nms','left-margin','right-margin'].forEach(id => {
+    const el = $(id);
+    const valEl = $(id+'-val');
+    el.addEventListener('input', () => {
+        valEl.textContent = parseFloat(el.value).toFixed(
+            id === 'brightness' ? 0 : 2
+        );
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Python detection code (runs in Pyodide)
+// ═══════════════════════════════════════════════════════════════
+const PYTHON_CODE = `
+import cv2
+import numpy as np
+import json
+import math
+
+def detect_pipeline(img_bytes, bubble_brightness=220, min_panel_frac=0.02,
+                    nms_threshold=0.3, left_margin_frac=0.06, right_margin_frac=0.0):
+    arr = np.frombuffer(bytes(img_bytes), dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return json.dumps({"error": "Could not decode image"})
+
+    orig_h, orig_w = img.shape[:2]
+    scale = 1.0
+    if max(orig_h, orig_w) < 1500:
+        scale = 1500 / max(orig_h, orig_w)
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    h, w = img.shape[:2]
+    panels = detect_panels(img, min_panel_frac)
+    results = []
+
+    for panel in panels:
+        px, py, pw, ph = panel
+        margin = 8
+        x1 = max(0, px - margin)
+        y1 = max(0, py - margin)
+        x2 = min(w, px + pw + margin)
+        y2 = min(h, py + ph + margin)
+        panel_img = img[y1:y2, x1:x2]
+        if panel_img.size == 0:
+            continue
+
+        regions = detect_text_regions(
+            panel_img, bubble_brightness, nms_threshold,
+            left_margin_frac, right_margin_frac
+        )
+
+        page_regions = []
+        for (rx, ry, rw, rh, rtype) in regions:
+            page_regions.append({
+                "type": rtype,
+                "bbox": [
+                    int((px + rx) / scale),
+                    int((py + ry) / scale),
+                    int(rw / scale),
+                    int(rh / scale)
+                ]
+            })
+
+        results.append({
+            "bbox": [
+                int(px / scale),
+                int(py / scale),
+                int(pw / scale),
+                int(ph / scale)
+            ],
+            "regions": page_regions
+        })
+
+    return json.dumps({"panels": results, "image_size": [int(orig_w), int(orig_h)]})
+
+
+# ── Panel detection ──────────────────────────────────────────────────────────
+
+def detect_panels(img, min_area_frac=0.02):
+    h, w = img.shape[:2]
+    page_area = h * w
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    panels = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < page_area * min_area_frac:
+            continue
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        solidity = area / (bw * bh) if bw * bh > 0 else 0
+        if solidity < 0.70:
+            continue
+        panels.append([x, y, bw, bh])
+
+    if not panels:
+        panels = [[0, 0, w, h]]
+
+    panels = sort_reading_order(panels)
+
+    # Split wide panels on internal dividers
+    split = []
+    for p in panels:
+        subs = split_panel_on_dividers(gray, p)
+        split.extend(subs)
+    panels = split
+
+    return sort_reading_order(panels)
+
+
+def split_panel_on_dividers(img_gray, bbox, min_line_frac=0.4):
+    x, y, pw, ph = bbox
+    roi = img_gray[y:y+ph, x:x+pw]
+    _, thresh = cv2.threshold(roi, 80, 255, cv2.THRESH_BINARY_INV)
+
+    # Vertical dividers
+    min_h = int(ph * min_line_frac)
+    col_sums = np.sum(thresh == 255, axis=0)
+    strong_cols = np.where(col_sums > min_h)[0]
+    if len(strong_cols) > 0:
+        dividers, group_start, prev = [], strong_cols[0], strong_cols[0]
+        for col in strong_cols[1:]:
+            if col - prev > 10:
+                dividers.append((group_start + prev) // 2)
+                group_start = col
+            prev = col
+        dividers.append((group_start + prev) // 2)
+        interior = [d for d in dividers if pw * 0.15 < d < pw * 0.85]
+        if interior:
+            pts = [0] + interior + [pw]
+            results = []
+            for i in range(len(pts) - 1):
+                sw = pts[i+1] - pts[i]
+                if sw > pw * 0.15:
+                    results.append([x + pts[i], y, sw, ph])
+            if results:
+                return results
+
+    # Horizontal dividers
+    min_w = int(pw * min_line_frac)
+    row_sums = np.sum(thresh == 255, axis=1)
+    strong_rows = np.where(row_sums > min_w)[0]
+    if len(strong_rows) > 0:
+        dividers, group_start, prev = [], strong_rows[0], strong_rows[0]
+        for row in strong_rows[1:]:
+            if row - prev > 10:
+                dividers.append((group_start + prev) // 2)
+                group_start = row
+            prev = row
+        dividers.append((group_start + prev) // 2)
+        interior = [d for d in dividers if ph * 0.15 < d < ph * 0.85]
+        if interior:
+            pts = [0] + interior + [ph]
+            results = []
+            for i in range(len(pts) - 1):
+                sh = pts[i+1] - pts[i]
+                if sh > ph * 0.15:
+                    results.append([x, y + pts[i], pw, sh])
+            if results:
+                return results
+
+    return [bbox]
+
+
+def sort_reading_order(panels):
+    if not panels:
+        return panels
+    sorted_by_y = sorted(panels, key=lambda p: p[1])
+    rows, current_row = [], [sorted_by_y[0]]
+    row_bottom = sorted_by_y[0][1] + sorted_by_y[0][3]
+    for panel in sorted_by_y[1:]:
+        py = panel[1]
+        if py < row_bottom * 0.85:
+            current_row.append(panel)
+            row_bottom = max(row_bottom, py + panel[3])
+        else:
+            rows.append(current_row)
+            current_row = [panel]
+            row_bottom = py + panel[3]
+    rows.append(current_row)
+    ordered = []
+    for row in rows:
+        ordered.extend(sorted(row, key=lambda p: p[0]))
+    return ordered
+
+
+# ── Background removal ───────────────────────────────────────────────────────
+
+def remove_background(binary):
+    h, w = binary.shape[:2]
+    mask = np.zeros((h + 2, w + 2), dtype=np.uint8)
+    filled = binary.copy()
+    for (fy, fx) in [(0, 0), (0, w-1), (h-1, 0), (h-1, w-1)]:
+        if filled[fy, fx] == 255:
+            cv2.floodFill(filled, mask, (fx, fy), 0)
+    return filled
+
+
+# ── NMS ─────────────────────────────────────────────────────────────────────
+
+def nms_regions(regions, iou_threshold=0.3, containment=0.70):
+    if len(regions) <= 1:
+        return regions
+    regions = sorted(regions, key=lambda r: r[2] * r[3], reverse=True)
+    kept = []
+    for cand in regions:
+        cx, cy, cw, ch = cand[:4]
+        suppress = False
+        for k in kept:
+            kx, ky, kw, kh = k[:4]
+            ix1, iy1 = max(cx, kx), max(cy, ky)
+            ix2, iy2 = min(cx+cw, kx+kw), min(cy+ch, ky+kh)
+            if ix2 <= ix1 or iy2 <= iy1:
+                continue
+            inter = (ix2-ix1) * (iy2-iy1)
+            ca = cw * ch
+            union = ca + kw*kh - inter
+            iou  = inter / union if union > 0 else 0
+            cont = inter / ca   if ca   > 0 else 0
+            if iou > iou_threshold or cont > containment:
+                suppress = True
+                break
+        if not suppress:
+            kept.append(cand)
+    return kept
+
+
+# ── Bubble splitting ─────────────────────────────────────────────────────────
+
+def split_merged_regions(binary):
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return []
+    bboxes = []
+    for cnt in contours:
+        if len(cnt) < 5:
+            bboxes.append(cv2.boundingRect(cnt))
+            continue
+        hull = cv2.convexHull(cnt, returnPoints=False)
+        if hull is None or len(hull) < 3:
+            bboxes.append(cv2.boundingRect(cnt))
+            continue
+        try:
+            defects = cv2.convexityDefects(cnt, hull)
+        except Exception:
+            bboxes.append(cv2.boundingRect(cnt))
+            continue
+        if defects is None:
+            bboxes.append(cv2.boundingRect(cnt))
+            continue
+
+        defect_list = []
+        for i in range(defects.shape[0]):
+            s, e, f, d = defects[i, 0]
+            depth = d / 256.0
+            far_pt = tuple(cnt[f][0])
+            defect_list.append((depth, far_pt))
+        defect_list.sort(key=lambda x: x[0], reverse=True)
+
+        min_depth = cv2.contourArea(cnt) ** 0.5 * 0.15
+        significant = [(d, pt) for d, pt in defect_list if d > min_depth]
+
+        if len(significant) < 2:
+            bboxes.append(cv2.boundingRect(cnt))
+            continue
+
+        pt1 = significant[0][1]
+        pt2 = significant[1][1]
+        mask = binary.copy()
+        cv2.line(mask, pt1, pt2, 0, thickness=8)
+        split_contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(split_contours) >= 2:
+            for sc in split_contours:
+                if cv2.contourArea(sc) > 500:
+                    bboxes.append(cv2.boundingRect(sc))
+        else:
+            bboxes.append(cv2.boundingRect(cnt))
+    return bboxes
+
+
+def split_wide_region(binary, min_area=2000):
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+    bboxes = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if w < h * 0.9:
+            bboxes.append((x, y, w, h))
+            continue
+        roi = binary[y:y+h, x:x+w]
+        mid_start = w // 4
+        mid_end   = 3 * w // 4
+        col_sums  = np.sum(roi[:, mid_start:mid_end] == 255, axis=0)
+        if col_sums.size == 0:
+            bboxes.append((x, y, w, h))
+            continue
+        min_col = mid_start + int(np.argmin(col_sums))
+        mask = binary.copy()
+        cv2.line(mask, (x + min_col, y), (x + min_col, y + h), 0, thickness=6)
+        split_contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(split_contours) >= 2:
+            for sc in split_contours:
+                if cv2.contourArea(sc) > min_area:
+                    bboxes.append(cv2.boundingRect(sc))
+        else:
+            bboxes.append((x, y, w, h))
+    return bboxes
+
+
+# ── Rectangular region detection ─────────────────────────────────────────────
+
+def detect_rectangular_regions(panel_img, existing_regions, panel_area):
+    h, w = panel_img.shape[:2]
+    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    edges = cv2.dilate(edges, kernel, iterations=1)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    regions = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < panel_area * 0.005 or area > panel_area * 0.25:
+            continue
+        x, y, rw, rh = cv2.boundingRect(cnt)
+        if rw < 80 or rh < 80 or rw * rh < 8000:
+            continue
+        aspect = rw / rh if rh > 0 else 0
+        if aspect < 0.3 or aspect > 4.0:
+            continue
+        epsilon = 0.04 * cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+        if len(approx) != 4:
+            continue
+        roi = gray[y:y+rh, x:x+rw]
+        if roi.size == 0:
+            continue
+        mean_brightness = np.mean(roi)
+        if mean_brightness < 200:
+            continue
+        _, roi_binary = cv2.threshold(roi, 127, 255, cv2.THRESH_BINARY_INV)
+        ink_density = np.sum(roi_binary == 255) / roi_binary.size
+        if ink_density < 0.06 or ink_density > 0.4:
+            continue
+
+        # Skip if overlaps existing bubble region
+        skip = False
+        for (ex, ey, ew, eh, _) in existing_regions:
+            ix1, iy1 = max(x, ex), max(y, ey)
+            ix2, iy2 = min(x+rw, ex+ew), min(y+rh, ey+eh)
+            if ix2 > ix1 and iy2 > iy1:
+                inter = (ix2-ix1)*(iy2-iy1)
+                if inter / (rw*rh) > 0.15:
+                    skip = True
+                    break
+        if skip:
+            continue
+
+        rtype = "caption" if (y/h < 0.12 or (y+rh)/h > 0.88) and aspect > 2 else "bubble"
+        regions.append((x, y, rw, rh, rtype))
+    return regions
+
+
+# ── Main text region detection ───────────────────────────────────────────────
+
+def detect_text_regions(panel_img, brightness=220, nms_thresh=0.3,
+                         left_margin=0.06, right_margin=0.0):
+    if panel_img is None or panel_img.size == 0:
+        return []
+
+    h, w = panel_img.shape[:2]
+    panel_area = h * w
+    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+
+    # Threshold for white bubble fills
+    _, light = cv2.threshold(gray, brightness, 255, cv2.THRESH_BINARY)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    light = cv2.erode(light, kernel, iterations=2)
+    light = remove_background(light)
+    contours, _ = cv2.findContours(light, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidate_bboxes = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < panel_area * 0.005 or area > panel_area * 0.25:
+            continue
+        x, y, rw, rh = cv2.boundingRect(cnt)
+        if rw < 60 or rh < 60:
+            continue
+        aspect = rw / rh if rh > 0 else 0
+        if aspect < 0.2 or aspect > 8.0:
+            continue
+
+        # Edge exclusion
+        lm = w * left_margin
+        rm = w * right_margin
+        if x < lm and rw < w * 0.4:
+            continue
+        if (x + rw) > (w - rm) and rw < w * 0.4:
+            continue
+
+        perimeter = cv2.arcLength(cnt, True)
+        circ = (4 * math.pi * area) / (perimeter**2) if perimeter > 0 else 0
+
+        # Large low-circularity region — try splitting
+        if area > panel_area * 0.08 and circ < 0.80:
+            region_mask = np.zeros_like(light)
+            cv2.drawContours(region_mask, [cnt], -1, 255, -1)
+            if rw > rh * 0.9:
+                sub_bboxes = split_wide_region(region_mask, min_area=panel_area * 0.03)
+            else:
+                sub_bboxes = split_merged_regions(region_mask)
+            for (sx, sy, sw, sh) in sub_bboxes:
+                if sw > 60 and sh > 60:
+                    a = sw / sh if sh > 0 else 1
+                    rtype = "caption" if (sy/h < 0.12 or (sy+sh)/h > 0.88) and a > 2 else "bubble"
+                    candidate_bboxes.append((sx, sy, sw, sh, rtype))
+        else:
+            if circ < 0.45:
+                continue
+            rtype = "caption" if (y/h < 0.12 or (y+rh)/h > 0.88) and aspect > 2 else "bubble"
+            candidate_bboxes.append((x, y, rw, rh, rtype))
+
+    # Add rectangular regions
+    rect_regions = detect_rectangular_regions(panel_img, candidate_bboxes, panel_area)
+    candidate_bboxes.extend(rect_regions)
+
+    # NMS
+    candidate_bboxes = nms_regions(candidate_bboxes, nms_thresh)
+    return candidate_bboxes
+
+
+print("Detection pipeline ready.")
+`;
+
+// ═══════════════════════════════════════════════════════════════
+// Initialise Pyodide
+// ═══════════════════════════════════════════════════════════════
+async function initPyodide() {
+    $('loading-overlay').classList.add('show');
+    $('loading-sub').textContent = 'Loading Python (Pyodide)...';
+    setStatus('Loading Python engine...');
+
+    try {
+        pyodide = await loadPyodide();
+
+        $('loading-sub').textContent = 'Installing OpenCV (~20MB, please wait)...';
+        setStatus('Installing OpenCV...');
+        await pyodide.loadPackage(['opencv-python', 'numpy']);
+
+        $('loading-sub').textContent = 'Setting up detection pipeline...';
+        await pyodide.runPythonAsync(PYTHON_CODE);
+
+        $('loading-overlay').classList.remove('show');
+        setStatus('✓ Ready! Upload a comic page to begin.');
+        $('run-btn').disabled = !currentImageData;
+
+    } catch (err) {
+        $('loading-overlay').classList.remove('show');
+        setStatus('❌ Failed to load Python engine: ' + err.message, true);
+        console.error(err);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// File upload
+// ═══════════════════════════════════════════════════════════════
+$('file-input').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    $('file-name').textContent = '📄 ' + file.name;
+    setStatus('Loading image...');
+
+    const arrayBuffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+
+    // Draw preview
+    const blob = new Blob([bytes], { type: file.type });
+    const url  = URL.createObjectURL(blob);
+    const img  = new Image();
+    img.onload = () => {
+        const canvas = $('output-canvas');
+        canvas.width  = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        currentImageData = { bytes, width: img.naturalWidth, height: img.naturalHeight };
+        canvas.style.display = 'block';
+        $('canvas-placeholder').style.display = 'none';
+        URL.revokeObjectURL(url);
+        if (pyodide) {
+            $('run-btn').disabled = false;
+            setStatus('✓ Image loaded. Click RUN OCR!');
+        }
+    };
+    img.src = url;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Run pipeline
+// ═══════════════════════════════════════════════════════════════
+$('run-btn').addEventListener('click', runPipeline);
+
+async function runPipeline() {
+    if (!pyodide || !currentImageData) return;
+
+    $('run-btn').disabled = true;
+    $('transcript').value = '';
+    setProgress(5);
+    setStatus('🔍 Detecting panels and bubbles...');
+
+    try {
+        // ── 1. Run Python detection ──
+        const brightness   = parseInt($('brightness').value);
+        const panelArea    = parseFloat($('panel-area').value);
+        const nmsVal       = parseFloat($('nms').value);
+        const leftMargin   = parseFloat($('left-margin').value);
+        const rightMargin  = parseFloat($('right-margin').value);
+
+        // Pass bytes to Python
+        pyodide.globals.set('_img_bytes', currentImageData.bytes);
+        const jsonResult = await pyodide.runPythonAsync(`
+detect_pipeline(
+    _img_bytes,
+    bubble_brightness=${brightness},
+    min_panel_frac=${panelArea},
+    nms_threshold=${nmsVal},
+    left_margin_frac=${leftMargin},
+    right_margin_frac=${rightMargin}
+)
+        `);
+
+        const result = JSON.parse(jsonResult);
+        if (result.error) {
+            setStatus('❌ Detection error: ' + result.error, true);
+            $('run-btn').disabled = false;
+            setProgress(0);
+            return;
+        }
+
+        currentResults = result;
+        setProgress(25);
+        setStatus(`✓ Found ${result.panels.length} panel(s). Running OCR...`);
+
+        // ── 2. Draw annotations ──
+        drawAnnotations(result);
+
+        // ── 3. Sort regions within each panel by reading order ──
+        const regionOrder  = document.querySelector('input[name="region-order"]:checked').value;
+        const panelOrderV  = document.querySelector('input[name="panel-order"]:checked').value;
+
+        // Sort panels if manga order selected
+        if (panelOrderV === 'manga') {
+            result.panels.sort((a, b) => {
+                const ay = a.bbox[1], by2 = b.bbox[1];
+                const ah = a.bbox[3], bh = b.bbox[3];
+                // Group into rows (same y-band), then reverse x within each row
+                if (Math.abs(ay - by2) < Math.min(ah, bh) * 0.5) {
+                    return b.bbox[0] - a.bbox[0];   // right to left
+                }
+                return ay - by2;   // top to bottom between rows
+            });
+        }
+
+        // Sort regions within each panel
+        for (const panel of result.panels) {
+            panel.regions.sort((a, b) => {
+                const [ax, ay] = a.bbox;
+                const [bx, by] = b.bbox;
+                if (regionOrder === 'ttb') {
+                    // Top to bottom — primary sort by y, secondary by x
+                    if (Math.abs(ay - by) > 30) return ay - by;
+                    return ax - bx;
+                } else if (regionOrder === 'manga') {
+                    // Manga — primary sort by y-band, secondary right to left
+                    if (Math.abs(ay - by) > 30) return ay - by;
+                    return bx - ax;   // right to left
+                } else {
+                    // Left to right (default) — primary sort by y-band, secondary left to right
+                    if (Math.abs(ay - by) > 30) return ay - by;
+                    return ax - bx;
+                }
+            });
+        }
+
+        // ── 4. Flatten all regions in order ──
+        const allRegions = [];
+        for (const panel of result.panels) {
+            for (const region of panel.regions) {
+                allRegions.push(region);
+            }
+        }
+
+        if (allRegions.length === 0) {
+            setStatus('⚠ No text regions detected. Try adjusting parameters.');
+            $('run-btn').disabled = false;
+            setProgress(0);
+            return;
+        }
+
+        const worker = await Tesseract.createWorker('eng', 1, {
+            logger: m => {
+                if (m.status === 'recognizing text') {
+                    // progress already handled below
+                }
+            }
+        });
+
+        const canvas  = $('output-canvas');
+        const ctx     = canvas.getContext('2d');
+        const transcriptLines = [];
+        let currentPanel = -1;
+
+        for (let i = 0; i < allRegions.length; i++) {
+            const region = allRegions[i];
+            const [rx, ry, rw, rh] = region.bbox;
+            const pct = 25 + Math.round((i / allRegions.length) * 70);
+            setProgress(pct);
+            setStatus(`OCR region ${i+1} of ${allRegions.length}...`);
+
+            // Crop the region from the canvas
+            const cropCanvas = document.createElement('canvas');
+            const padding = 8;
+            cropCanvas.width  = rw + padding * 2;
+            cropCanvas.height = rh + padding * 2;
+            const cropCtx = cropCanvas.getContext('2d');
+            cropCtx.fillStyle = 'white';
+            cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+            cropCtx.drawImage(canvas, rx, ry, rw, rh, padding, padding, rw, rh);
+
+            // OCR
+            const { data: { text, confidence } } = await worker.recognize(cropCanvas);
+            const cleanText = text.trim();
+
+            if (cleanText) {
+                // Find which panel this belongs to
+                const panelIdx = result.panels.findIndex(p =>
+                    p.regions.some(r => r === region)
+                );
+                if (panelIdx !== currentPanel) {
+                    transcriptLines.push(`\n[Panel ${panelIdx}]`);
+                    currentPanel = panelIdx;
+                }
+                transcriptLines.push(`  [${region.type}]: ${cleanText}`);
+
+                // Draw text label on canvas
+                ctx.font = 'bold 12px Comic Neue, cursive';
+                ctx.fillStyle = region.type === 'bubble' ? '#22c55e' : '#f97316';
+                ctx.fillText(cleanText.substring(0, 28), rx + 2, Math.max(ry - 4, 14));
+            }
+        }
+
+        await worker.terminate();
+
+        $('transcript').value = transcriptLines.join('\n').trim();
+
+        setProgress(100);
+        setStatus(`✅ Done! ${allRegions.length} region(s) processed.`);
+        setTimeout(() => setProgress(0), 1500);
+
+        // Enable downloads
+        buildDownloads(result, transcriptLines);
+
+    } catch (err) {
+        setStatus('❌ Error: ' + err.message, true);
+        console.error(err);
+    }
+
+    $('run-btn').disabled = false;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Draw bounding boxes
+// ═══════════════════════════════════════════════════════════════
+function drawAnnotations(result) {
+    // Redraw original image first
+    const canvas = $('output-canvas');
+    const ctx    = canvas.getContext('2d');
+
+    const img = new Image();
+    const blob = new Blob([currentImageData.bytes]);
+    const url  = URL.createObjectURL(blob);
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+
+        for (let pi = 0; pi < result.panels.length; pi++) {
+            const panel = result.panels[pi];
+            const [px, py, pw, ph] = panel.bbox;
+
+            // Panel border — blue
+            ctx.strokeStyle = '#3b82f6';
+            ctx.lineWidth   = 3;
+            ctx.strokeRect(px, py, pw, ph);
+            ctx.fillStyle = '#3b82f6';
+            ctx.font = 'bold 14px Bangers, cursive';
+            ctx.fillText(`P${pi}`, px + 5, py + 18);
+
+            // Region boxes
+            for (const region of panel.regions) {
+                const [rx, ry, rw, rh] = region.bbox;
+                ctx.strokeStyle = region.type === 'bubble'   ? '#22c55e'
+                                : region.type === 'caption'  ? '#f97316'
+                                : '#6366f1';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(rx, ry, rw, rh);
+            }
+        }
+    };
+    img.src = url;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Downloads
+// ═══════════════════════════════════════════════════════════════
+function buildDownloads(result, transcriptLines) {
+    // JSON
+    const jsonStr = JSON.stringify(result, null, 2);
+
+    // CSV
+    const rows = [['panel','region_type','x','y','w','h','text']];
+    const transcript = $('transcript').value;
+    rows.push(...transcript.split('\n')
+        .filter(l => l.includes('[') && l.includes(']:'))
+        .map((l, i) => {
+            const type = l.match(/\[(\w+)\]/)?.[1] || '';
+            const text = l.split(']: ')[1] || '';
+            return [i, type, '', '', '', '', text];
+        })
+    );
+    const csvStr = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+
+    const area = $('download-area');
+    area.innerHTML = '';
+
+    const makeBtn = (label, content, filename, mime) => {
+        const btn = document.createElement('a');
+        btn.className = 'btn-download';
+        btn.textContent = label;
+        const blob = new Blob([content], { type: mime });
+        btn.href = URL.createObjectURL(blob);
+        btn.download = filename;
+        area.appendChild(btn);
+    };
+
+    makeBtn('📥 JSON', jsonStr, 'results.json', 'application/json');
+    makeBtn('📥 CSV',  csvStr, 'results.csv',  'text/csv');
+    makeBtn('📥 TXT',  $('transcript').value, 'transcript.txt', 'text/plain');
+
+    // Annotated image
+    const imgBtn = document.createElement('a');
+    imgBtn.className = 'btn-download';
+    imgBtn.textContent = '📥 Annotated image';
+    imgBtn.href = $('output-canvas').toDataURL('image/jpeg', 0.92);
+    imgBtn.download = 'annotated.jpg';
+    area.appendChild(imgBtn);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Boot
+// ═══════════════════════════════════════════════════════════════
+initPyodide();
+</script>
+</body>
+</html>
