@@ -434,9 +434,29 @@ select, input[type="text"] {
 
             <label class="field-label">OCR Backend</label>
             <div class="radio-group" style="flex-direction:column;gap:6px">
-                <label><input type="radio" name="ocr" value="tesseract" checked> Tesseract.js</label>
-                <label><input type="radio" name="ocr" value="trocr"> TrOCR (vision model)</label>
-                <label><input type="radio" name="ocr" value="hybrid"> Hybrid (Tesseract + TrOCR fallback)</label>
+                <label><input type="radio" name="ocr" value="tesseract" checked>
+                    Tesseract.js <span style="font-size:0.75rem;opacity:0.7">(recommended)</span>
+                </label>
+                <label><input type="radio" name="ocr" value="trocr">
+                    TrOCR <span style="font-size:0.75rem;opacity:0.7">(experimental)</span>
+                </label>
+                <label><input type="radio" name="ocr" value="hybrid">
+                    Hybrid <span style="font-size:0.75rem;opacity:0.7">(experimental)</span>
+                </label>
+            </div>
+
+            <label class="field-label" style="margin-top:12px">Tesseract page mode</label>
+            <select id="tess-psm" style="width:100%;padding:5px 8px;border:2px solid var(--ink);
+                border-radius:3px;font-family:Comic Neue,cursive;background:#fffff8;font-size:0.85rem">
+                <option value="6">PSM 6 — uniform text block (default)</option>
+                <option value="4">PSM 4 — single column</option>
+                <option value="7">PSM 7 — single line (small bubbles)</option>
+                <option value="11">PSM 11 — sparse text (SFX / floating)</option>
+                <option value="3">PSM 3 — auto detect</option>
+            </select>
+            <div style="font-size:0.75rem;margin-top:4px;opacity:0.7;line-height:1.4">
+                Try <b>PSM 7</b> for short single-word bubbles.<br>
+                Try <b>PSM 11</b> for SFX and floating text.
             </div>
 
             <div id="trocr-controls" style="display:none;margin-top:10px;padding-top:10px;
@@ -444,9 +464,9 @@ select, input[type="text"] {
                 <label class="field-label">TrOCR model</label>
                 <select id="trocr-model" style="width:100%;padding:5px 8px;border:2px solid var(--ink);
                     border-radius:3px;font-family:Comic Neue,cursive;background:#fffff8;font-size:0.85rem">
+                    <option value="Xenova/trocr-small-printed">trocr-small-printed (~150MB)</option>
                     <option value="Xenova/trocr-small-handwritten">trocr-small-handwritten (~150MB)</option>
-                    <option value="Xenova/trocr-base-handwritten">trocr-base-handwritten (~400MB, better)</option>
-                    <option value="Xenova/trocr-small-printed">trocr-small-printed (~150MB, clean fonts)</option>
+                    <option value="Xenova/trocr-base-handwritten">trocr-base-handwritten (~400MB)</option>
                 </select>
                 <div style="display:flex;gap:6px;margin-top:8px">
                     <button class="btn-download" id="load-trocr-btn"
@@ -457,8 +477,8 @@ select, input[type="text"] {
                         opacity:0.7;font-family:monospace"></span>
                 </div>
                 <div style="font-size:0.75rem;margin-top:6px;opacity:0.7;line-height:1.5">
-                    <b>Hybrid mode:</b> uses Tesseract first, switches to
-                    TrOCR for regions with confidence &lt;60%.
+                    ⚠️ TrOCR is experimental — results vary widely on comic fonts.
+                    Tesseract is recommended for most comics.
                 </div>
             </div>
         </div>
@@ -2211,6 +2231,7 @@ async function runOCROnEditedRegions() {
 
         // Always create Tesseract worker (needed for hybrid mode)
         const worker = await Tesseract.createWorker('eng', 1, {});
+        await worker.setParameters({ tessedit_pageseg_mode: params.tessPSM });
         const canvas = $('output-canvas');
         const ctx    = canvas.getContext('2d');
 
@@ -2515,6 +2536,7 @@ async function ocrAllPages() {
         return;
     }
     const worker  = await Tesseract.createWorker('eng', 1, {});
+    await worker.setParameters({ tessedit_pageseg_mode: params.tessPSM || 6 });
     const allPageResults  = [];
     const allTranscript   = [];
     const annotatedImages = [];
@@ -2945,13 +2967,128 @@ function splitIntoLines(srcCanvas) {
 }
 
 /**
+ * Preprocess a canvas crop for cleaner OCR on B&W manga/comics.
+ *
+ * Steps:
+ * 1. Convert to greyscale and binarise (Otsu-like threshold)
+ * 2. Find connected dark components
+ * 3. Remove components that are too large to be letters (artwork blobs)
+ *    or too small to be letters (noise dots)
+ * 4. Return a clean black-on-white canvas
+ *
+ * This dramatically reduces noise from hatching, shadows, and artwork
+ * that bleeds into detected text regions.
+ */
+function preprocessCropForOCR(srcCanvas) {
+    const w = srcCanvas.width;
+    const h = srcCanvas.height;
+    const area = w * h;
+
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width  = w;
+    tmpCanvas.height = h;
+    const ctx = tmpCanvas.getContext('2d');
+    ctx.drawImage(srcCanvas, 0, 0);
+
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+
+    // Step 1: convert to greyscale
+    const grey = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+        const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
+        grey[i] = Math.round(0.299*r + 0.587*g + 0.114*b);
+    }
+
+    // Step 2: Otsu threshold
+    const hist = new Array(256).fill(0);
+    for (let v of grey) hist[v]++;
+    let sumAll = 0;
+    for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+    let sumB = 0, wB = 0, maxVar = 0, thresh = 128;
+    for (let t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (wB === 0) continue;
+        const wF = w * h - wB;
+        if (wF === 0) break;
+        sumB += t * hist[t];
+        const mB = sumB / wB;
+        const mF = (sumAll - sumB) / wF;
+        const v = wB * wF * (mB - mF) * (mB - mF);
+        if (v > maxVar) { maxVar = v; thresh = t; }
+    }
+
+    // Step 3: binarise — dark pixels = ink
+    const binary = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+        binary[i] = grey[i] < thresh ? 1 : 0;
+    }
+
+    // Step 4: simple flood-fill connected components to find blob sizes
+    // Use max letter size heuristic: letters are typically 8–200px wide/tall
+    const minLetterArea = 12;
+    const maxLetterArea = area * 0.08;  // no single letter > 8% of crop
+
+    const labels = new Int32Array(w * h).fill(-1);
+    let labelCount = 0;
+    const blobAreas = [];
+
+    for (let start = 0; start < w * h; start++) {
+        if (binary[start] === 0 || labels[start] !== -1) continue;
+        // BFS
+        const queue = [start];
+        labels[start] = labelCount;
+        let area2 = 0;
+        let qi = 0;
+        while (qi < queue.length) {
+            const idx = queue[qi++];
+            area2++;
+            const x = idx % w, y = Math.floor(idx / w);
+            const neighbours = [];
+            if (x > 0)   neighbours.push(idx - 1);
+            if (x < w-1) neighbours.push(idx + 1);
+            if (y > 0)   neighbours.push(idx - w);
+            if (y < h-1) neighbours.push(idx + w);
+            for (const n of neighbours) {
+                if (binary[n] === 1 && labels[n] === -1) {
+                    labels[n] = labelCount;
+                    queue.push(n);
+                }
+            }
+        }
+        blobAreas.push(area2);
+        labelCount++;
+    }
+
+    // Step 5: rebuild image keeping only letter-sized blobs
+    const out = ctx.createImageData(w, h);
+    const od = out.data;
+    // Default: white background
+    for (let i = 0; i < od.length; i += 4) {
+        od[i] = od[i+1] = od[i+2] = 255; od[i+3] = 255;
+    }
+    for (let i = 0; i < w * h; i++) {
+        if (labels[i] >= 0) {
+            const a = blobAreas[labels[i]];
+            if (a >= minLetterArea && a <= maxLetterArea) {
+                // Keep this pixel as black
+                od[i*4] = od[i*4+1] = od[i*4+2] = 0;
+            }
+        }
+    }
+    ctx.putImageData(out, 0, 0);
+    return tmpCanvas;
+}
+
+/**
  * Unified OCR helper — runs the selected engine on a canvas crop.
  * Returns { text, confidence } always.
  * mode: 'tesseract' | 'trocr' | 'hybrid'
  */
 async function ocrCrop(cropCanvas, tessWorker, mode) {
     if (mode === 'tesseract') {
-        const { data: { text, confidence } } = await tessWorker.recognize(cropCanvas);
+        const clean = preprocessCropForOCR(cropCanvas);
+        const { data: { text, confidence } } = await tessWorker.recognize(clean);
         return { text: text.trim(), confidence };
     }
 
@@ -3006,8 +3143,9 @@ async function ocrCrop(cropCanvas, tessWorker, mode) {
 
     if (mode === 'hybrid') {
         // Run Tesseract first
+        const clean = preprocessCropForOCR(cropCanvas);
         const { data: { text: tessText, confidence: tessConf } } =
-            await tessWorker.recognize(cropCanvas);
+            await tessWorker.recognize(clean);
         if (tessConf >= 60) {
             return { text: tessText.trim(), confidence: tessConf };
         }
