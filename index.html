@@ -14,6 +14,14 @@
 <!-- Tesseract.js -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
+<!-- PDF.js -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs" type="module"></script>
+<script type="module">
+    import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+    window.pdfjsLib = pdfjsLib;
+</script>
+
 <style>
 :root {
     --ink: #1a1a1a;
@@ -375,10 +383,38 @@ select, input[type="text"] {
                 <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.tiff,.tif,.pdf">
                 <span class="upload-icon">🗂</span>
                 <div class="upload-label">Drop comic page here</div>
-                <div class="upload-hint">JPG, PNG, TIFF supported<br>PDF support requires PDF.js</div>
+                <div class="upload-hint">JPG, PNG, TIFF, PDF supported</div>
             </div>
 
             <div id="file-name" style="margin-top:8px;font-size:0.8rem;font-weight:700;"></div>
+
+            <!-- PDF page controls — hidden until a PDF is loaded -->
+            <div id="pdf-controls" style="display:none;margin-top:10px">
+                <label class="field-label">PDF Pages</label>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <button class="btn-download" id="pdf-prev" style="padding:4px 10px">◀ Prev</button>
+                    <span id="pdf-page-label" style="font-weight:700;font-size:0.9rem">Page 1 / 1</span>
+                    <button class="btn-download" id="pdf-next" style="padding:4px 10px">Next ▶</button>
+                </div>
+                <div style="margin-top:6px;display:flex;align-items:center;gap:6px">
+                    <label class="field-label" style="margin:0">Go to page:</label>
+                    <input type="number" id="pdf-goto" min="1" value="1"
+                        style="width:60px;padding:4px 6px;border:2px solid var(--ink);border-radius:3px;
+                               font-family:Comic Neue,cursive;background:#fffff8">
+                    <button class="btn-download" id="pdf-goto-btn" style="padding:4px 10px">Go</button>
+                </div>
+                <div style="margin-top:10px;border-top:2px dashed var(--ink);padding-top:10px">
+                    <button class="btn-run" id="run-all-btn"
+                        style="font-size:1.1rem;letter-spacing:2px;padding:8px;margin-top:0">
+                        ⚡ RUN ALL PAGES
+                    </button>
+                    <div style="margin-top:6px;font-size:0.75rem;opacity:0.7;line-height:1.5">
+                        Processes every page in sequence.<br>
+                        Downloads include the full document.<br>
+                        Large PDFs may take a while!
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="panel">
@@ -983,6 +1019,60 @@ async function initPyodide() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// PDF state
+// ═══════════════════════════════════════════════════════════════
+let pdfDoc        = null;
+let pdfPageNum    = 1;
+let pdfTotalPages = 1;
+
+async function renderPdfPage(pageNum) {
+    if (!pdfDoc) return;
+    setStatus(`Rendering PDF page ${pageNum} of ${pdfTotalPages}...`);
+    const page      = await pdfDoc.getPage(pageNum);
+    const viewport  = page.getViewport({ scale: 2.0 });   // 2x = ~144dpi, good for OCR
+    const canvas    = $('output-canvas');
+    canvas.width    = viewport.width;
+    canvas.height   = viewport.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    // Convert rendered canvas to JPEG bytes for Python pipeline
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const base64  = dataUrl.split(',')[1];
+    const binary  = atob(base64);
+    const bytes   = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    currentImageData = { bytes, width: canvas.width, height: canvas.height };
+    canvas.style.display = 'block';
+    $('canvas-placeholder').style.display = 'none';
+
+    $('pdf-page-label').textContent = `Page ${pageNum} / ${pdfTotalPages}`;
+    $('pdf-goto').value = pageNum;
+
+    if (pyodide) {
+        $('run-btn').disabled = false;
+        setStatus(`✓ PDF page ${pageNum} ready. Click RUN OCR!`);
+    }
+}
+
+function updatePdfNav() {
+    $('pdf-prev').disabled = pdfPageNum <= 1;
+    $('pdf-next').disabled = pdfPageNum >= pdfTotalPages;
+}
+
+$('pdf-prev') && $('pdf-prev').addEventListener('click', async () => {
+    if (pdfPageNum > 1) { pdfPageNum--; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+});
+$('pdf-next') && $('pdf-next').addEventListener('click', async () => {
+    if (pdfPageNum < pdfTotalPages) { pdfPageNum++; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+});
+$('pdf-goto-btn') && $('pdf-goto-btn').addEventListener('click', async () => {
+    const n = parseInt($('pdf-goto').value);
+    if (n >= 1 && n <= pdfTotalPages) { pdfPageNum = n; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+});
+
+// ═══════════════════════════════════════════════════════════════
 // File upload
 // ═══════════════════════════════════════════════════════════════
 $('file-input').addEventListener('change', async (e) => {
@@ -990,57 +1080,111 @@ $('file-input').addEventListener('change', async (e) => {
     if (!file) return;
 
     $('file-name').textContent = '📄 ' + file.name;
-    setStatus('Loading image...');
-
     const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
+    const bytes       = new Uint8Array(arrayBuffer);
 
-    // Draw preview
-    const blob = new Blob([bytes], { type: file.type });
-    const url  = URL.createObjectURL(blob);
-    const img  = new Image();
-    img.onload = () => {
-        const canvas = $('output-canvas');
-        canvas.width  = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        currentImageData = { bytes, width: img.naturalWidth, height: img.naturalHeight };
-        canvas.style.display = 'block';
-        $('canvas-placeholder').style.display = 'none';
-        URL.revokeObjectURL(url);
-        if (pyodide) {
-            $('run-btn').disabled = false;
-            setStatus('✓ Image loaded. Click RUN OCR!');
+    const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+
+    if (isPdf) {
+        // ── PDF path ──
+        setStatus('Loading PDF...');
+        $('pdf-controls').style.display = 'block';
+
+        // Wait for PDF.js to be available (loaded via module script)
+        let attempts = 0;
+        while (!window.pdfjsLib && attempts < 20) {
+            await new Promise(r => setTimeout(r, 200));
+            attempts++;
         }
-    };
-    img.src = url;
+        if (!window.pdfjsLib) {
+            setStatus('❌ PDF.js failed to load. Try refreshing.', true);
+            return;
+        }
+
+        try {
+            const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
+            pdfDoc        = await loadingTask.promise;
+            pdfTotalPages = pdfDoc.numPages;
+            pdfPageNum    = 1;
+            updatePdfNav();
+            await renderPdfPage(1);
+        } catch (err) {
+            setStatus('❌ Could not load PDF: ' + err.message, true);
+            console.error(err);
+        }
+
+    } else {
+        // ── Image path ──
+        $('pdf-controls').style.display = 'none';
+        pdfDoc = null;
+        setStatus('Loading image...');
+
+        const blob = new Blob([bytes], { type: file.type });
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => {
+            const canvas  = $('output-canvas');
+            canvas.width  = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            currentImageData = { bytes, width: img.naturalWidth, height: img.naturalHeight };
+            canvas.style.display = 'block';
+            $('canvas-placeholder').style.display = 'none';
+            URL.revokeObjectURL(url);
+            if (pyodide) {
+                $('run-btn').disabled = false;
+                setStatus('✓ Image loaded. Click RUN OCR!');
+            }
+        };
+        img.src = url;
+    }
 });
 
 // ═══════════════════════════════════════════════════════════════
 // Run pipeline
 // ═══════════════════════════════════════════════════════════════
 $('run-btn').addEventListener('click', runPipeline);
+document.addEventListener('DOMContentLoaded', () => {
+    const runAllBtn = $('run-all-btn');
+    if (runAllBtn) runAllBtn.addEventListener('click', runAllPages);
+});
+// Also wire immediately in case DOMContentLoaded already fired
+setTimeout(() => {
+    const runAllBtn = $('run-all-btn');
+    if (runAllBtn) runAllBtn.addEventListener('click', runAllPages);
+}, 0);
 
-async function runPipeline() {
-    if (!pyodide || !currentImageData) return;
+// ── Shared: get detection params ─────────────────────────────────────────────
+function getParams() {
+    return {
+        brightness:  parseInt($('brightness').value),
+        panelArea:   parseFloat($('panel-area').value),
+        nmsVal:      parseFloat($('nms').value),
+        leftMargin:  parseFloat($('left-margin').value),
+        rightMargin: parseFloat($('right-margin').value),
+        regionOrder: document.querySelector('input[name="region-order"]:checked').value,
+        panelOrder:  document.querySelector('input[name="panel-order"]:checked').value,
+    };
+}
 
-    $('run-btn').disabled = true;
-    $('transcript').value = '';
-    setProgress(5);
-    setStatus('🔍 Detecting panels and bubbles...');
+// ── Shared: render canvas bytes → JPEG Uint8Array ─────────────────────────────
+function canvasToBytes(canvas) {
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    const base64  = dataUrl.split(',')[1];
+    const binary  = atob(base64);
+    const bytes   = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+}
 
-    try {
-        // ── 1. Run Python detection ──
-        const brightness   = parseInt($('brightness').value);
-        const panelArea    = parseFloat($('panel-area').value);
-        const nmsVal       = parseFloat($('nms').value);
-        const leftMargin   = parseFloat($('left-margin').value);
-        const rightMargin  = parseFloat($('right-margin').value);
+// ── Shared: detect + OCR one page worth of image bytes ───────────────────────
+async function processImageBytes(imgBytes, params, worker, pageCanvas) {
+    const { brightness, panelArea, nmsVal, leftMargin, rightMargin,
+            regionOrder, panelOrder } = params;
 
-        // Pass bytes to Python
-        pyodide.globals.set('_img_bytes', currentImageData.bytes);
-        const jsonResult = await pyodide.runPythonAsync(`
+    pyodide.globals.set('_img_bytes', imgBytes);
+    const jsonResult = await pyodide.runPythonAsync(`
 detect_pipeline(
     _img_bytes,
     bubble_brightness=${brightness},
@@ -1049,142 +1193,123 @@ detect_pipeline(
     left_margin_frac=${leftMargin},
     right_margin_frac=${rightMargin}
 )
-        `);
+    `);
 
-        const result = JSON.parse(jsonResult);
-        if (result.error) {
-            setStatus('❌ Detection error: ' + result.error, true);
-            $('run-btn').disabled = false;
-            setProgress(0);
-            return;
-        }
+    const result = JSON.parse(jsonResult);
+    if (result.error) throw new Error(result.error);
 
-        currentResults = result;
-        setProgress(25);
-        setStatus(`✓ Found ${result.panels.length} panel(s). Running OCR...`);
+    // Sort panels
+    if (panelOrder === 'manga') {
+        result.panels.sort((a, b) => {
+            const ay = a.bbox[1], by2 = b.bbox[1];
+            const ah = a.bbox[3], bh = b.bbox[3];
+            if (Math.abs(ay - by2) < Math.min(ah, bh) * 0.5) return b.bbox[0] - a.bbox[0];
+            return ay - by2;
+        });
+    }
 
-        // ── 2. Draw annotations ──
-        drawAnnotations(result);
-
-        // ── 3. Sort regions within each panel by reading order ──
-        const regionOrder  = document.querySelector('input[name="region-order"]:checked').value;
-        const panelOrderV  = document.querySelector('input[name="panel-order"]:checked').value;
-
-        // Sort panels if manga order selected
-        if (panelOrderV === 'manga') {
-            result.panels.sort((a, b) => {
-                const ay = a.bbox[1], by2 = b.bbox[1];
-                const ah = a.bbox[3], bh = b.bbox[3];
-                // Group into rows (same y-band), then reverse x within each row
-                if (Math.abs(ay - by2) < Math.min(ah, bh) * 0.5) {
-                    return b.bbox[0] - a.bbox[0];   // right to left
-                }
-                return ay - by2;   // top to bottom between rows
-            });
-        }
-
-        // Sort regions within each panel
-        for (const panel of result.panels) {
-            panel.regions.sort((a, b) => {
-                const [ax, ay] = a.bbox;
-                const [bx, by] = b.bbox;
-                if (regionOrder === 'ttb') {
-                    // Top to bottom — primary sort by y, secondary by x
-                    if (Math.abs(ay - by) > 30) return ay - by;
-                    return ax - bx;
-                } else if (regionOrder === 'manga') {
-                    // Manga — primary sort by y-band, secondary right to left
-                    if (Math.abs(ay - by) > 30) return ay - by;
-                    return bx - ax;   // right to left
-                } else {
-                    // Left to right (default) — primary sort by y-band, secondary left to right
-                    if (Math.abs(ay - by) > 30) return ay - by;
-                    return ax - bx;
-                }
-            });
-        }
-
-        // ── 4. Flatten all regions in order ──
-        const allRegions = [];
-        for (const panel of result.panels) {
-            for (const region of panel.regions) {
-                allRegions.push(region);
-            }
-        }
-
-        if (allRegions.length === 0) {
-            setStatus('⚠ No text regions detected. Try adjusting parameters.');
-            $('run-btn').disabled = false;
-            setProgress(0);
-            return;
-        }
-
-        const worker = await Tesseract.createWorker('eng', 1, {
-            logger: m => {
-                if (m.status === 'recognizing text') {
-                    // progress already handled below
-                }
+    // Sort regions within panels
+    for (const panel of result.panels) {
+        panel.regions.sort((a, b) => {
+            const [ax, ay] = a.bbox;
+            const [bx, by] = b.bbox;
+            if (regionOrder === 'ttb') {
+                if (Math.abs(ay - by) > 30) return ay - by;
+                return ax - bx;
+            } else if (regionOrder === 'manga') {
+                if (Math.abs(ay - by) > 30) return ay - by;
+                return bx - ax;
+            } else {
+                if (Math.abs(ay - by) > 30) return ay - by;
+                return ax - bx;
             }
         });
+    }
 
-        const canvas  = $('output-canvas');
-        const ctx     = canvas.getContext('2d');
-        const transcriptLines = [];
-        let currentPanel = -1;
-
-        for (let i = 0; i < allRegions.length; i++) {
-            const region = allRegions[i];
+    // Draw annotations on the page canvas
+    const ctx = pageCanvas.getContext('2d');
+    for (let pi = 0; pi < result.panels.length; pi++) {
+        const panel = result.panels[pi];
+        const [px, py, pw, ph] = panel.bbox;
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth   = 3;
+        ctx.strokeRect(px, py, pw, ph);
+        ctx.fillStyle = '#3b82f6';
+        ctx.font = 'bold 14px Bangers, cursive';
+        ctx.fillText(`P${pi}`, px + 5, py + 18);
+        for (const region of panel.regions) {
             const [rx, ry, rw, rh] = region.bbox;
-            const pct = 25 + Math.round((i / allRegions.length) * 70);
-            setProgress(pct);
-            setStatus(`OCR region ${i+1} of ${allRegions.length}...`);
-
-            // Crop the region from the canvas
-            const cropCanvas = document.createElement('canvas');
-            const padding = 8;
-            cropCanvas.width  = rw + padding * 2;
-            cropCanvas.height = rh + padding * 2;
-            const cropCtx = cropCanvas.getContext('2d');
-            cropCtx.fillStyle = 'white';
-            cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
-            cropCtx.drawImage(canvas, rx, ry, rw, rh, padding, padding, rw, rh);
-
-            // OCR
-            const { data: { text, confidence } } = await worker.recognize(cropCanvas);
-            const cleanText = text.trim();
-
-            // Always store text on region (even empty — for complete JSON)
-            region.text       = cleanText;
-            region.confidence = confidence;
-
-            if (cleanText) {
-                // Find which panel this belongs to
-                const panelIdx = result.panels.findIndex(p =>
-                    p.regions.some(r => r === region)
-                );
-                if (panelIdx !== currentPanel) {
-                    transcriptLines.push(`\n[Panel ${panelIdx}]`);
-                    currentPanel = panelIdx;
-                }
-                transcriptLines.push(`  [${region.type}]: ${cleanText}`);
-
-                // Draw text label on canvas
-                ctx.font = 'bold 12px Comic Neue, cursive';
-                ctx.fillStyle = region.type === 'bubble' ? '#22c55e' : '#f97316';
-                ctx.fillText(cleanText.substring(0, 28), rx + 2, Math.max(ry - 4, 14));
-            }
+            ctx.strokeStyle = region.type === 'bubble'  ? '#22c55e'
+                            : region.type === 'caption' ? '#f97316' : '#6366f1';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(rx, ry, rw, rh);
         }
+    }
+
+    // OCR each region
+    const allRegions = result.panels.flatMap(p => p.regions);
+    const transcriptLines = [];
+    let currentPanel = -1;
+
+    for (let i = 0; i < allRegions.length; i++) {
+        const region = allRegions[i];
+        const [rx, ry, rw, rh] = region.bbox;
+
+        const cropCanvas = document.createElement('canvas');
+        const padding = 8;
+        cropCanvas.width  = rw + padding * 2;
+        cropCanvas.height = rh + padding * 2;
+        const cropCtx = cropCanvas.getContext('2d');
+        cropCtx.fillStyle = 'white';
+        cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+        cropCtx.drawImage(pageCanvas, rx, ry, rw, rh, padding, padding, rw, rh);
+
+        const { data: { text, confidence } } = await worker.recognize(cropCanvas);
+        const cleanText = text.trim();
+        region.text       = cleanText;
+        region.confidence = confidence;
+
+        if (cleanText) {
+            const panelIdx = result.panels.findIndex(p => p.regions.some(r => r === region));
+            if (panelIdx !== currentPanel) {
+                transcriptLines.push(`\n[Panel ${panelIdx}]`);
+                currentPanel = panelIdx;
+            }
+            transcriptLines.push(`  [${region.type}]: ${cleanText}`);
+            ctx.font = 'bold 12px Comic Neue, cursive';
+            ctx.fillStyle = region.type === 'bubble' ? '#22c55e' : '#f97316';
+            ctx.fillText(cleanText.substring(0, 28), rx + 2, Math.max(ry - 4, 14));
+        }
+    }
+
+    return { result, transcriptLines, regionCount: allRegions.length };
+}
+
+// ── Single page pipeline ──────────────────────────────────────────────────────
+async function runPipeline() {
+    if (!pyodide || !currentImageData) return;
+    $('run-btn').disabled = true;
+    $('transcript').value = '';
+    setProgress(5);
+    setStatus('🔍 Detecting panels and bubbles...');
+
+    try {
+        const params = getParams();
+        const worker = await Tesseract.createWorker('eng', 1, {});
+        const canvas = $('output-canvas');
+
+        setStatus('🔍 Running detection...');
+        const { result, transcriptLines, regionCount } =
+            await processImageBytes(currentImageData.bytes, params, worker, canvas);
 
         await worker.terminate();
 
+        currentResults = result;
         $('transcript').value = transcriptLines.join('\n').trim();
-
         setProgress(100);
-        setStatus(`✅ Done! ${allRegions.length} region(s) processed.`);
+        setStatus(`✅ Done! ${regionCount} region(s) processed.`);
         setTimeout(() => setProgress(0), 1500);
-
-        // Enable downloads
-        buildDownloads(result, transcriptLines);
+        buildDownloads([{ page: 1, result }]);
 
     } catch (err) {
         setStatus('❌ Error: ' + err.message, true);
@@ -1192,6 +1317,82 @@ detect_pipeline(
     }
 
     $('run-btn').disabled = false;
+}
+
+// ── All pages pipeline ────────────────────────────────────────────────────────
+async function runAllPages() {
+    if (!pyodide || !pdfDoc) return;
+
+    const runAllBtn = $('run-all-btn');
+    $('run-btn').disabled    = true;
+    runAllBtn.disabled       = true;
+    $('transcript').value    = '';
+
+    const params     = getParams();
+    const worker     = await Tesseract.createWorker('eng', 1, {});
+    const allPageResults  = [];
+    const allTranscript   = [];
+    const annotatedImages = [];   // one canvas per page
+
+    try {
+        for (let pageNum = 1; pageNum <= pdfTotalPages; pageNum++) {
+            const overallPct = Math.round(((pageNum - 1) / pdfTotalPages) * 100);
+            setProgress(overallPct);
+            setStatus(`📄 Page ${pageNum} of ${pdfTotalPages} — rendering...`);
+
+            // Render PDF page to a fresh offscreen canvas
+            const page     = await pdfDoc.getPage(pageNum);
+            const viewport = page.getViewport({ scale: 2.0 });
+            const pageCanvas = document.createElement('canvas');
+            pageCanvas.width  = viewport.width;
+            pageCanvas.height = viewport.height;
+            await page.render({ canvasContext: pageCanvas.getContext('2d'), viewport }).promise;
+
+            // Also update the visible canvas so user can see progress
+            const visCanvas = $('output-canvas');
+            visCanvas.width  = viewport.width;
+            visCanvas.height = viewport.height;
+            visCanvas.getContext('2d').drawImage(pageCanvas, 0, 0);
+            visCanvas.style.display = 'block';
+            $('canvas-placeholder').style.display = 'none';
+            $('pdf-page-label').textContent = `Page ${pageNum} / ${pdfTotalPages}`;
+            pdfPageNum = pageNum;
+
+            const imgBytes = canvasToBytes(pageCanvas);
+            setStatus(`📄 Page ${pageNum} of ${pdfTotalPages} — detecting & OCR...`);
+
+            const { result, transcriptLines, regionCount } =
+                await processImageBytes(imgBytes, params, worker, pageCanvas);
+
+            // Copy annotations back to visible canvas
+            visCanvas.getContext('2d').drawImage(pageCanvas, 0, 0);
+
+            allPageResults.push({ page: pageNum, result });
+            allTranscript.push(`\n${'═'.repeat(40)}\nPAGE ${pageNum}\n${'═'.repeat(40)}`);
+            allTranscript.push(...transcriptLines);
+            annotatedImages.push({ pageNum, canvas: pageCanvas });
+        }
+
+        await worker.terminate();
+
+        $('transcript').value = allTranscript.join('\n').trim();
+        setProgress(100);
+        const totalRegions = allPageResults.reduce(
+            (sum, p) => sum + p.result.panels.reduce(
+                (ps, pan) => ps + pan.regions.length, 0), 0);
+        setStatus(`✅ All ${pdfTotalPages} pages done! ${totalRegions} region(s) total.`);
+        setTimeout(() => setProgress(0), 2000);
+
+        buildDownloads(allPageResults, annotatedImages);
+
+    } catch (err) {
+        setStatus('❌ Error on page processing: ' + err.message, true);
+        console.error(err);
+        await worker.terminate();
+    }
+
+    $('run-btn').disabled   = false;
+    runAllBtn.disabled      = false;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1237,36 +1438,10 @@ function drawAnnotations(result) {
 
 // ═══════════════════════════════════════════════════════════════
 // Downloads
+// pageResults = array of { page, result }
+// annotatedImages = array of { pageNum, canvas } (optional, for multi-page)
 // ═══════════════════════════════════════════════════════════════
-function buildDownloads(result, transcriptLines) {
-    // ── JSON — result now has .text on each region ──────────────────────────
-    const jsonStr = JSON.stringify(result, null, 2);
-
-    // ── CSV — built directly from result object, not transcript textarea ────
-    const csvRows = [['panel', 'reading_order', 'region_type', 'x', 'y', 'w', 'h', 'confidence', 'text']];
-    for (let pi = 0; pi < result.panels.length; pi++) {
-        const panel = result.panels[pi];
-        for (let ri = 0; ri < panel.regions.length; ri++) {
-            const region = panel.regions[ri];
-            const [rx, ry, rw, rh] = region.bbox;
-            csvRows.push([
-                pi,
-                ri,
-                region.type,
-                rx, ry, rw, rh,
-                region.confidence ? region.confidence.toFixed(3) : '',
-                region.text || '',
-            ]);
-        }
-    }
-    const csvStr = csvRows
-        .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
-        .join('\n');
-
-    // ── Plain text — use transcript textarea directly (already correct) ─────
-    const txtStr = $('transcript').value;
-
-    // ── Build download buttons ───────────────────────────────────────────────
+function buildDownloads(pageResults, annotatedImages) {
     const area = $('download-area');
     area.innerHTML = '';
 
@@ -1280,17 +1455,57 @@ function buildDownloads(result, transcriptLines) {
         area.appendChild(btn);
     };
 
+    // ── JSON — full multi-page structure ────────────────────────────────────
+    const jsonStr = JSON.stringify(pageResults, null, 2);
     makeBtn('📥 JSON', jsonStr, 'results.json', 'application/json');
-    makeBtn('📥 CSV',  csvStr,  'results.csv',  'text/csv');
-    makeBtn('📥 TXT',  txtStr,  'transcript.txt', 'text/plain');
 
-    // Annotated image — canvas already has boxes + labels drawn
-    const imgBtn = document.createElement('a');
-    imgBtn.className = 'btn-download';
-    imgBtn.textContent = '📥 Annotated image';
-    imgBtn.href = $('output-canvas').toDataURL('image/jpeg', 0.92);
-    imgBtn.download = 'annotated.jpg';
-    area.appendChild(imgBtn);
+    // ── CSV — one row per region across all pages ───────────────────────────
+    const csvRows = [['page', 'panel', 'reading_order', 'region_type',
+                      'x', 'y', 'w', 'h', 'confidence', 'text']];
+    for (const { page, result } of pageResults) {
+        for (let pi = 0; pi < result.panels.length; pi++) {
+            const panel = result.panels[pi];
+            for (let ri = 0; ri < panel.regions.length; ri++) {
+                const region = panel.regions[ri];
+                const [rx, ry, rw, rh] = region.bbox;
+                csvRows.push([
+                    page, pi, ri,
+                    region.type,
+                    rx, ry, rw, rh,
+                    region.confidence ? region.confidence.toFixed(3) : '',
+                    region.text || '',
+                ]);
+            }
+        }
+    }
+    const csvStr = csvRows
+        .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+        .join('\n');
+    makeBtn('📥 CSV', csvStr, 'results.csv', 'text/csv');
+
+    // ── Plain text — transcript textarea ────────────────────────────────────
+    makeBtn('📥 TXT', $('transcript').value, 'transcript.txt', 'text/plain');
+
+    // ── Annotated images ─────────────────────────────────────────────────────
+    if (annotatedImages && annotatedImages.length > 1) {
+        // Multi-page: one download button per page
+        for (const { pageNum, canvas } of annotatedImages) {
+            const imgBtn = document.createElement('a');
+            imgBtn.className = 'btn-download';
+            imgBtn.textContent = `📥 Page ${pageNum} image`;
+            imgBtn.href = canvas.toDataURL('image/jpeg', 0.92);
+            imgBtn.download = `annotated_page_${pageNum}.jpg`;
+            area.appendChild(imgBtn);
+        }
+    } else {
+        // Single page: use the visible canvas
+        const imgBtn = document.createElement('a');
+        imgBtn.className = 'btn-download';
+        imgBtn.textContent = '📥 Annotated image';
+        imgBtn.href = $('output-canvas').toDataURL('image/jpeg', 0.92);
+        imgBtn.download = 'annotated.jpg';
+        area.appendChild(imgBtn);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
