@@ -1153,6 +1153,10 @@ detect_pipeline(
             const { data: { text, confidence } } = await worker.recognize(cropCanvas);
             const cleanText = text.trim();
 
+            // Always store text on region (even empty — for complete JSON)
+            region.text       = cleanText;
+            region.confidence = confidence;
+
             if (cleanText) {
                 // Find which panel this belongs to
                 const panelIdx = result.panels.findIndex(p =>
@@ -1235,40 +1239,52 @@ function drawAnnotations(result) {
 // Downloads
 // ═══════════════════════════════════════════════════════════════
 function buildDownloads(result, transcriptLines) {
-    // JSON
+    // ── JSON — result now has .text on each region ──────────────────────────
     const jsonStr = JSON.stringify(result, null, 2);
 
-    // CSV
-    const rows = [['panel','region_type','x','y','w','h','text']];
-    const transcript = $('transcript').value;
-    rows.push(...transcript.split('\n')
-        .filter(l => l.includes('[') && l.includes(']:'))
-        .map((l, i) => {
-            const type = l.match(/\[(\w+)\]/)?.[1] || '';
-            const text = l.split(']: ')[1] || '';
-            return [i, type, '', '', '', '', text];
-        })
-    );
-    const csvStr = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+    // ── CSV — built directly from result object, not transcript textarea ────
+    const csvRows = [['panel', 'reading_order', 'region_type', 'x', 'y', 'w', 'h', 'confidence', 'text']];
+    for (let pi = 0; pi < result.panels.length; pi++) {
+        const panel = result.panels[pi];
+        for (let ri = 0; ri < panel.regions.length; ri++) {
+            const region = panel.regions[ri];
+            const [rx, ry, rw, rh] = region.bbox;
+            csvRows.push([
+                pi,
+                ri,
+                region.type,
+                rx, ry, rw, rh,
+                region.confidence ? region.confidence.toFixed(3) : '',
+                region.text || '',
+            ]);
+        }
+    }
+    const csvStr = csvRows
+        .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+        .join('\n');
 
+    // ── Plain text — use transcript textarea directly (already correct) ─────
+    const txtStr = $('transcript').value;
+
+    // ── Build download buttons ───────────────────────────────────────────────
     const area = $('download-area');
     area.innerHTML = '';
 
-    const makeBtn = (label, content, filename, mime) => {
+    const makeBtn = (label, fileContent, filename, mime) => {
         const btn = document.createElement('a');
         btn.className = 'btn-download';
         btn.textContent = label;
-        const blob = new Blob([content], { type: mime });
+        const blob = new Blob([fileContent], { type: mime });
         btn.href = URL.createObjectURL(blob);
         btn.download = filename;
         area.appendChild(btn);
     };
 
     makeBtn('📥 JSON', jsonStr, 'results.json', 'application/json');
-    makeBtn('📥 CSV',  csvStr, 'results.csv',  'text/csv');
-    makeBtn('📥 TXT',  $('transcript').value, 'transcript.txt', 'text/plain');
+    makeBtn('📥 CSV',  csvStr,  'results.csv',  'text/csv');
+    makeBtn('📥 TXT',  txtStr,  'transcript.txt', 'text/plain');
 
-    // Annotated image
+    // Annotated image — canvas already has boxes + labels drawn
     const imgBtn = document.createElement('a');
     imgBtn.className = 'btn-download';
     imgBtn.textContent = '📥 Annotated image';
