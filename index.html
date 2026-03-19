@@ -433,8 +433,8 @@ select, input[type="text"] {
 
             <label class="field-label">Bubble Brightness <span style="font-weight:400;text-transform:none">(lower = detect darker bubbles)</span></label>
             <div class="slider-row">
-                <input type="range" id="brightness" min="150" max="254" value="220" step="5">
-                <span class="slider-val" id="brightness-val">220</span>
+                <input type="range" id="brightness" min="150" max="254" value="190" step="5">
+                <span class="slider-val" id="brightness-val">190</span>
             </div>
 
             <label class="field-label">Min Panel Size</label>
@@ -568,7 +568,7 @@ import numpy as np
 import json
 import math
 
-def detect_pipeline(img_bytes, bubble_brightness=220, min_panel_frac=0.02,
+def detect_pipeline(img_bytes, bubble_brightness=190, min_panel_frac=0.02,
                     nms_threshold=0.3, left_margin_frac=0.06, right_margin_frac=0.0):
     arr = np.frombuffer(bytes(img_bytes), dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
@@ -867,7 +867,9 @@ def split_wide_region(binary, min_area=2000):
 
 def detect_rectangular_regions(panel_img, existing_regions, panel_area):
     h, w = panel_img.shape[:2]
-    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+    # Use LAB colorspace L channel — better separates white bubbles from coloured backgrounds
+    lab  = cv2.cvtColor(panel_img, cv2.COLOR_BGR2LAB)
+    gray = lab[:, :, 0]   # L channel: 0=black, 255=white, colour-independent
     edges = cv2.Canny(gray, 50, 150)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     edges = cv2.dilate(edges, kernel, iterations=1)
@@ -926,10 +928,17 @@ def detect_text_regions(panel_img, brightness=220, nms_thresh=0.3,
 
     h, w = panel_img.shape[:2]
     panel_area = h * w
-    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+    # Use LAB colorspace L channel — better separates white bubbles from coloured backgrounds
+    lab  = cv2.cvtColor(panel_img, cv2.COLOR_BGR2LAB)
+    gray = lab[:, :, 0]   # L channel: 0=black, 255=white, colour-independent
 
     # Threshold for white bubble fills
     _, light = cv2.threshold(gray, brightness, 255, cv2.THRESH_BINARY)
+    hsv = cv2.cvtColor(panel_img, cv2.COLOR_BGR2HSV)
+    _, sat, _ = cv2.split(hsv)
+# White bubbles have saturation < 40; coloured areas have saturation > 80
+    low_sat_mask = cv2.threshold(sat, 40, 255, cv2.THRESH_BINARY_INV)[1]
+    light = cv2.bitwise_and(light, low_sat_mask)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     light = cv2.erode(light, kernel, iterations=2)
     light = remove_background(light)
