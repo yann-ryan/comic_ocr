@@ -22,6 +22,14 @@
     window.pdfjsLib = pdfjsLib;
 </script>
 
+<!-- Transformers.js — for T5 OCR correction -->
+<script type="module">
+    import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
+    env.allowLocalModels = false;
+    window.transformersPipeline = pipeline;
+    window.transformersEnv = env;
+</script>
+
 <style>
 :root {
     --ink: #1a1a1a;
@@ -404,14 +412,18 @@ select, input[type="text"] {
                     <button class="btn-download" id="pdf-goto-btn" style="padding:4px 10px">Go</button>
                 </div>
                 <div style="margin-top:10px;border-top:2px dashed var(--ink);padding-top:10px">
-                    <button class="btn-run" id="run-all-btn"
-                        style="font-size:1.1rem;letter-spacing:2px;padding:8px;margin-top:0">
-                        ⚡ RUN ALL PAGES
+                    <button class="btn-run" id="detect-all-btn" disabled
+                        style="font-size:1rem;letter-spacing:2px;padding:8px;margin-top:0">
+                        🔍 DETECT ALL PAGES
                     </button>
-                    <div style="margin-top:6px;font-size:0.75rem;opacity:0.7;line-height:1.5">
-                        Processes every page in sequence.<br>
-                        Downloads include the full document.<br>
-                        Large PDFs may take a while!
+                    <button class="btn-run" id="ocr-all-btn" disabled
+                        style="font-size:1rem;letter-spacing:2px;padding:8px;margin-top:6px;
+                               display:none;background:#2563eb">
+                        ⚡ OCR ALL PAGES
+                    </button>
+                    <div id="all-pages-hint" style="margin-top:6px;font-size:0.75rem;opacity:0.7;line-height:1.5">
+                        Detect regions on all pages first,<br>
+                        then edit per page, then OCR all.
                     </div>
                 </div>
             </div>
@@ -421,11 +433,34 @@ select, input[type="text"] {
             <span class="panel-title">⚙️ ENGINE</span>
 
             <label class="field-label">OCR Backend</label>
-            <div class="radio-group">
+            <div class="radio-group" style="flex-direction:column;gap:6px">
                 <label><input type="radio" name="ocr" value="tesseract" checked> Tesseract.js</label>
-                <label><input type="radio" name="ocr" value="easyocr" disabled title="Not available in browser"> EasyOCR</label>
+                <label><input type="radio" name="ocr" value="trocr"> TrOCR (vision model)</label>
+                <label><input type="radio" name="ocr" value="hybrid"> Hybrid (Tesseract + TrOCR fallback)</label>
             </div>
-            <div style="font-size:0.75rem;margin-top:4px;opacity:0.7">EasyOCR unavailable in browser (requires PyTorch)</div>
+
+            <div id="trocr-controls" style="display:none;margin-top:10px;padding-top:10px;
+                border-top:2px dashed var(--ink)">
+                <label class="field-label">TrOCR model</label>
+                <select id="trocr-model" style="width:100%;padding:5px 8px;border:2px solid var(--ink);
+                    border-radius:3px;font-family:Comic Neue,cursive;background:#fffff8;font-size:0.85rem">
+                    <option value="Xenova/trocr-small-handwritten">trocr-small-handwritten (~150MB)</option>
+                    <option value="Xenova/trocr-base-handwritten">trocr-base-handwritten (~400MB, better)</option>
+                    <option value="Xenova/trocr-small-printed">trocr-small-printed (~150MB, clean fonts)</option>
+                </select>
+                <div style="display:flex;gap:6px;margin-top:8px">
+                    <button class="btn-download" id="load-trocr-btn"
+                        style="background:var(--yellow);flex:1">
+                        📥 Load TrOCR model
+                    </button>
+                    <span id="trocr-status" style="font-size:0.75rem;align-self:center;
+                        opacity:0.7;font-family:monospace"></span>
+                </div>
+                <div style="font-size:0.75rem;margin-top:6px;opacity:0.7;line-height:1.5">
+                    <b>Hybrid mode:</b> uses Tesseract first, switches to
+                    TrOCR for regions with confidence &lt;60%.
+                </div>
+            </div>
         </div>
 
         <div class="panel">
@@ -484,7 +519,9 @@ select, input[type="text"] {
             </div>
         </div>
 
-        <button class="btn-run" id="run-btn" disabled>⚡ ZAP! RUN OCR ⚡</button>
+        <button class="btn-run" id="detect-btn" disabled>🔍 DETECT REGIONS</button>
+        <button class="btn-run" id="run-btn" disabled
+            style="display:none;background:#2563eb;margin-top:8px">⚡ RUN OCR ⚡</button>
 
         <div class="progress-wrap" id="progress-wrap">
             <div class="progress-bar" id="progress-bar"></div>
@@ -503,11 +540,36 @@ select, input[type="text"] {
     <div>
         <div class="panel">
             <span class="panel-title">🔍 DETECTED REGIONS</span>
-            <div class="canvas-wrap" id="canvas-wrap">
+
+            <!-- Editor toolbar — shown only in edit mode -->
+            <div id="editor-toolbar" style="display:none;margin-bottom:10px;display:none">
+                <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+                    <button class="btn-download" id="tool-select"
+                        style="background:var(--yellow);border:2px solid black">✋ Select</button>
+                    <button class="btn-download" id="tool-draw">✏️ Draw new</button>
+                    <button class="btn-download" id="tool-delete">🗑 Delete selected</button>
+                    <select id="region-type-select"
+                        style="padding:4px 8px;border:2px solid var(--ink);border-radius:3px;
+                               font-family:Comic Neue,cursive;background:#fffff8;font-size:0.85rem">
+                        <option value="bubble">Bubble</option>
+                        <option value="caption">Caption</option>
+                        <option value="floating">Floating</option>
+                    </select>
+                    <button class="btn-download" id="tool-set-type">Set type</button>
+                </div>
+                <div style="font-size:0.75rem;opacity:0.7;line-height:1.4" id="editor-hint">
+                    Click a box to select. Drag to move. Drag corner handles to resize.
+                </div>
+            </div>
+
+            <div class="canvas-wrap" id="canvas-wrap" style="position:relative">
                 <div class="canvas-placeholder" id="canvas-placeholder">
                     Upload a comic page<br>to get started!
                 </div>
-                <canvas id="output-canvas" style="display:none"></canvas>
+                <!-- Base image canvas (never drawn on interactively) -->
+                <canvas id="base-canvas" style="display:none;position:absolute;top:0;left:0"></canvas>
+                <!-- Interactive overlay canvas for boxes -->
+                <canvas id="output-canvas" style="display:none;position:relative;z-index:2"></canvas>
             </div>
         </div>
 
@@ -515,6 +577,33 @@ select, input[type="text"] {
             <span class="panel-title">📝 TRANSCRIPT</span>
             <textarea class="transcript-area" id="transcript" readonly
                 placeholder="Extracted text will appear here in reading order..."></textarea>
+        </div>
+
+        <div class="panel" id="correction-panel" style="display:none">
+            <span class="panel-title">🤖 AI CORRECTION</span>
+
+            <div style="font-size:0.82rem;line-height:1.5;margin-bottom:10px">
+                <b>Step 1:</b> Fast spell fix runs automatically after OCR.<br>
+                <b>Step 2:</b> Click below to load a small AI model (~60MB) for
+                smarter corrections. Works on CPU — no GPU needed.
+            </div>
+
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+                <button class="btn-download" id="load-t5-btn"
+                    style="background:var(--yellow)">
+                    📥 Load AI model
+                </button>
+                <button class="btn-download" id="run-t5-btn" disabled
+                    style="background:#22c55e;color:white">
+                    ✨ Fix with AI
+                </button>
+                <button class="btn-download" id="revert-btn" disabled>
+                    ↩ Revert
+                </button>
+            </div>
+
+            <div id="t5-status" style="font-size:0.78rem;opacity:0.7;font-family:monospace;
+                min-height:18px;line-height:1.4"></div>
         </div>
 
         <div class="panel">
@@ -531,9 +620,16 @@ select, input[type="text"] {
 // ═══════════════════════════════════════════════════════════════
 // State
 // ═══════════════════════════════════════════════════════════════
-let pyodide = null;
-let currentImageData = null;   // original image as ImageData
-let currentResults   = null;   // last pipeline results
+let pyodide       = null;
+let currentImageData = null;
+let currentResults   = null;
+let t5Corrector      = null;
+let preCorrectText   = null;
+let allOCRRegions    = [];
+let allPagesData     = [];
+let allPagesDetected = false;
+let trOCR            = null;   // TrOCR image-to-text pipeline
+let trOCRModelName   = null;   // currently loaded model name
 
 // ═══════════════════════════════════════════════════════════════
 // UI helpers
@@ -547,6 +643,14 @@ const setProgress = (pct) => {
     $('progress-wrap').style.display = pct > 0 ? 'block' : 'none';
     $('progress-bar').style.width = pct + '%';
 };
+
+// Show/hide TrOCR controls based on OCR selection
+document.querySelectorAll('input[name="ocr"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        const val = document.querySelector('input[name="ocr"]:checked').value;
+        $('trocr-controls').style.display = (val !== 'tesseract') ? 'block' : 'none';
+    });
+});
 
 // Slider value display
 ['brightness','panel-area','nms','left-margin','right-margin'].forEach(id => {
@@ -663,56 +767,75 @@ def detect_panels(img, min_area_frac=0.02):
     return sort_reading_order(panels)
 
 
-def split_panel_on_dividers(img_gray, bbox, min_line_frac=0.4):
+def split_panel_on_dividers(img_gray, bbox, min_line_frac=0.85):
+    """
+    Split a detected panel on genuine internal dividing lines.
+    min_line_frac is now 0.85 — a divider must span 85% of the panel
+    to qualify, preventing artwork elements (trees, buildings) from
+    being mistaken for panel borders.
+    Only splits if the candidate line is also THIN (< 3% of panel dimension)
+    and near-continuous (< 10% gaps).
+    """
     x, y, pw, ph = bbox
     roi = img_gray[y:y+ph, x:x+pw]
-    _, thresh = cv2.threshold(roi, 80, 255, cv2.THRESH_BINARY_INV)
+
+    # Use a high threshold — genuine panel borders are very dark ink
+    _, thresh = cv2.threshold(roi, 50, 255, cv2.THRESH_BINARY_INV)
+
+    def find_dividers(sums, panel_dim, min_frac, max_thickness_frac=0.03):
+        """Find groups of columns/rows that form a near-continuous dark line."""
+        threshold = panel_dim * min_frac
+        strong = np.where(sums > threshold)[0]
+        if len(strong) == 0:
+            return []
+
+        # Group contiguous strong positions
+        groups = []
+        group_start = strong[0]
+        prev = strong[0]
+        for pos in strong[1:]:
+            if pos - prev > max(3, panel_dim * 0.02):   # allow small gaps
+                groups.append((group_start, prev))
+                group_start = pos
+            prev = pos
+        groups.append((group_start, prev))
+
+        # Keep only thin groups (genuine lines, not wide artwork elements)
+        max_thickness = panel_dim * max_thickness_frac
+        dividers = []
+        for (gs, ge) in groups:
+            thickness = ge - gs
+            if thickness <= max_thickness:
+                dividers.append((gs + ge) // 2)
+
+        # Only interior dividers (not at the panel edges)
+        return [d for d in dividers if panel_dim * 0.15 < d < panel_dim * 0.85]
 
     # Vertical dividers
-    min_h = int(ph * min_line_frac)
     col_sums = np.sum(thresh == 255, axis=0)
-    strong_cols = np.where(col_sums > min_h)[0]
-    if len(strong_cols) > 0:
-        dividers, group_start, prev = [], strong_cols[0], strong_cols[0]
-        for col in strong_cols[1:]:
-            if col - prev > 10:
-                dividers.append((group_start + prev) // 2)
-                group_start = col
-            prev = col
-        dividers.append((group_start + prev) // 2)
-        interior = [d for d in dividers if pw * 0.15 < d < pw * 0.85]
-        if interior:
-            pts = [0] + interior + [pw]
-            results = []
-            for i in range(len(pts) - 1):
-                sw = pts[i+1] - pts[i]
-                if sw > pw * 0.15:
-                    results.append([x + pts[i], y, sw, ph])
-            if results:
-                return results
+    v_dividers = find_dividers(col_sums, ph, min_line_frac)
+    if v_dividers:
+        pts = [0] + v_dividers + [pw]
+        results = []
+        for i in range(len(pts) - 1):
+            sw = pts[i+1] - pts[i]
+            if sw > pw * 0.15:
+                results.append([x + pts[i], y, sw, ph])
+        if len(results) > 1:
+            return results
 
     # Horizontal dividers
-    min_w = int(pw * min_line_frac)
     row_sums = np.sum(thresh == 255, axis=1)
-    strong_rows = np.where(row_sums > min_w)[0]
-    if len(strong_rows) > 0:
-        dividers, group_start, prev = [], strong_rows[0], strong_rows[0]
-        for row in strong_rows[1:]:
-            if row - prev > 10:
-                dividers.append((group_start + prev) // 2)
-                group_start = row
-            prev = row
-        dividers.append((group_start + prev) // 2)
-        interior = [d for d in dividers if ph * 0.15 < d < ph * 0.85]
-        if interior:
-            pts = [0] + interior + [ph]
-            results = []
-            for i in range(len(pts) - 1):
-                sh = pts[i+1] - pts[i]
-                if sh > ph * 0.15:
-                    results.append([x, y + pts[i], pw, sh])
-            if results:
-                return results
+    h_dividers = find_dividers(row_sums, pw, min_line_frac)
+    if h_dividers:
+        pts = [0] + h_dividers + [ph]
+        results = []
+        for i in range(len(pts) - 1):
+            sh = pts[i+1] - pts[i]
+            if sh > ph * 0.15:
+                results.append([x, y + pts[i], pw, sh])
+        if len(results) > 1:
+            return results
 
     return [bbox]
 
@@ -867,9 +990,7 @@ def split_wide_region(binary, min_area=2000):
 
 def detect_rectangular_regions(panel_img, existing_regions, panel_area):
     h, w = panel_img.shape[:2]
-    # Use LAB colorspace L channel — better separates white bubbles from coloured backgrounds
-    lab  = cv2.cvtColor(panel_img, cv2.COLOR_BGR2LAB)
-    gray = lab[:, :, 0]   # L channel: 0=black, 255=white, colour-independent
+    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     edges = cv2.dilate(edges, kernel, iterations=1)
@@ -919,32 +1040,294 @@ def detect_rectangular_regions(panel_img, existing_regions, panel_area):
     return regions
 
 
-# ── Main text region detection ───────────────────────────────────────────────
+# ── Colour detection helper ──────────────────────────────────────────────────
 
-def detect_text_regions(panel_img, brightness=220, nms_thresh=0.3,
-                         left_margin=0.06, right_margin=0.0):
-    if panel_img is None or panel_img.size == 0:
+def is_colour_comic(img):
+    """Detect if image is a colour comic vs B&W scan."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mean_sat = np.mean(hsv[:, :, 1])
+    return mean_sat > 25   # colour comics typically have mean saturation > 25
+
+
+def find_text_clusters(gray, panel_area):
+    """
+    Find clusters of dark ink strokes that look like text.
+    Returns list of (x, y, w, h) bounding boxes.
+    """
+    _, dark = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+
+    stroke_mask = np.zeros_like(dark)
+    min_stroke  = 8
+    max_stroke  = panel_area * 0.004
+
+    for i in range(1, num_labels):
+        a  = stats[i, cv2.CC_STAT_AREA]
+        sw = stats[i, cv2.CC_STAT_WIDTH]
+        sh = stats[i, cv2.CC_STAT_HEIGHT]
+        if min_stroke < a < max_stroke and sw < 100 and sh < 100:
+            stroke_mask[labels == i] = 255
+
+    if np.sum(stroke_mask) == 0:
         return []
 
-    h, w = panel_img.shape[:2]
-    panel_area = h * w
-    # Use LAB colorspace L channel — better separates white bubbles from coloured backgrounds
-    lab  = cv2.cvtColor(panel_img, cv2.COLOR_BGR2LAB)
-    gray = lab[:, :, 0]   # L channel: 0=black, 255=white, colour-independent
+    # Dilate strokes to merge into word/line clusters
+    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (28, 4))
+    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (4, 14))
+    merged = cv2.bitwise_or(cv2.dilate(stroke_mask, kh),
+                            cv2.dilate(stroke_mask, kv))
+    kc = cv2.getStructuringElement(cv2.MORPH_RECT, (32, 32))
+    merged = cv2.morphologyEx(merged, cv2.MORPH_CLOSE, kc)
 
-    # Threshold for white bubble fills
+    contours, _ = cv2.findContours(merged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    clusters = []
+    for cnt in contours:
+        a = cv2.contourArea(cnt)
+        if a < panel_area * 0.001:
+            continue
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        roi = stroke_mask[y:y+ch, x:x+cw]
+        density = np.sum(roi > 0) / (cw * ch) if cw * ch > 0 else 0
+        if density < 0.025:
+            continue
+        clusters.append((x, y, cw, ch))
+    return clusters
+
+
+def cluster_to_bubble_bbox(panel_img, tx, ty, tw, th, panel_area, L, sat):
+    """
+    Convert a text cluster into a bubble bounding box using a sealed
+    flood-fill on a white+low-sat mask. Falls back to padded cluster bbox.
+    Always returns a bbox — never returns None.
+    """
+    h, w = panel_img.shape[:2]
+
+    # Build white mask
+    _, bright   = cv2.threshold(L,   150, 255, cv2.THRESH_BINARY)
+    _, low_sat  = cv2.threshold(sat,  65, 255, cv2.THRESH_BINARY_INV)
+    white_mask  = cv2.bitwise_and(bright, low_sat)
+    _, med      = cv2.threshold(L,   125, 255, cv2.THRESH_BINARY)
+    _, vlow_sat = cv2.threshold(sat,  32, 255, cv2.THRESH_BINARY_INV)
+    white_mask  = cv2.bitwise_or(white_mask, cv2.bitwise_and(med, vlow_sat))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    white_mask  = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, k, iterations=2)
+
+    # Seal edges so tails touching the border don't let fill escape
+    sealed = white_mask.copy()
+    b = 3
+    sealed[:b,:] = sealed[-b:,:] = sealed[:,:b] = sealed[:,-b:] = 0
+
+    # Try flood fill from centre of text cluster
+    seed_x = min(w-b-1, max(b, tx + tw//2))
+    seed_y = min(h-b-1, max(b, ty + th//2))
+
+    found = False
+    for dx, dy in [(0,0),(-8,0),(8,0),(0,-8),(0,8),
+                   (-15,0),(15,0),(0,-15),(0,15),
+                   (-8,-8),(8,-8),(-8,8),(8,8)]:
+        sx = max(b, min(w-b-1, seed_x+dx))
+        sy = max(b, min(h-b-1, seed_y+dy))
+        if sealed[sy, sx] > 0:
+            seed_x, seed_y = sx, sy
+            found = True
+            break
+
+    if found:
+        fm = np.zeros((h+2, w+2), dtype=np.uint8)
+        fl = sealed.copy()
+        cv2.floodFill(fl, fm, (seed_x, seed_y), 128,
+                      loDiff=(22,), upDiff=(22,),
+                      flags=cv2.FLOODFILL_FIXED_RANGE)
+        region = np.uint8(fl == 128) * 255
+        fill_area = np.sum(region > 0)
+
+        if panel_area * 0.001 < fill_area < panel_area * 0.50:
+            coords = cv2.findNonZero(region)
+            if coords is not None:
+                fx, fy, fw, fh = cv2.boundingRect(coords)
+                pad = 12
+                fx  = max(0,   fx - pad)
+                fy  = max(0,   fy - pad)
+                fw  = min(w-fx, fw + pad*2)
+                fh  = min(h-fy, fh + pad*2)
+                if fw >= tw * 1.05 and fh >= th * 1.05:
+                    return (fx, fy, fw, fh)
+
+    # Flood fill failed — use padded text cluster as fallback
+    # Use generous padding: at least 30px or 40% of the text dimension
+    pad = max(30, int(min(tw, th) * 0.4))
+    fx  = max(0,   tx - pad)
+    fy  = max(0,   ty - pad)
+    fw  = min(w-fx, tw + pad*2)
+    fh  = min(h-fy, th + pad*2)
+    return (fx, fy, fw, fh)
+
+
+def find_oval_bubbles(panel_img, panel_area, L, sat, existing, left_margin, right_margin):
+    """
+    Find speech bubbles by detecting their dark oval outlines directly.
+    Complements the text-cluster approach by catching bubbles where the
+    text cluster detection missed or merged text into the wrong group.
+    Uses Hough-like approach: find closed dark contours with light interiors.
+    """
+    h, w = panel_img.shape[:2]
+    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+    lm, rm = w * left_margin, w * right_margin
+
+    # Find strong edges — bubble outlines are bold dark ink lines
+    edges = cv2.Canny(gray, 40, 120)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))
+    edges = cv2.dilate(edges, k, iterations=1)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < panel_area * 0.003 or area > panel_area * 0.42:
+            continue
+        x, y, rw, rh = cv2.boundingRect(cnt)
+        if rw < 30 or rh < 25:
+            continue
+        aspect = rw / rh if rh > 0 else 0
+        if aspect < 0.15 or aspect > 6.0:
+            continue
+        if x < lm and rw < w * 0.4:
+            continue
+        if (x+rw) > (w-rm) and rw < w * 0.4:
+            continue
+
+        # Circularity — bubble outlines are smooth
+        perimeter = cv2.arcLength(cnt, True)
+        circ = (4 * math.pi * area) / (perimeter**2) if perimeter > 0 else 0
+        if circ < 0.25:
+            continue
+
+        # Interior must be light and low-saturation
+        interior = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(interior, [cnt], -1, 255, -1)
+        # Shrink to avoid sampling the border pixels
+        k_s = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        interior_s = cv2.erode(interior, k_s, iterations=1)
+        px_count = np.sum(interior_s > 0)
+        if px_count < 300:
+            continue
+        mean_L   = np.mean(L[interior_s > 0])
+        mean_sat = np.mean(sat[interior_s > 0])
+        if mean_L < 160 or mean_sat > 55:
+            continue
+
+        # Must contain some text ink (rules out windows, plain white areas)
+        ink_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(ink_mask, [cnt], -1, 255, -1)
+        roi_gray = gray.copy()
+        roi_gray[ink_mask == 0] = 255
+        _, dark_ink = cv2.threshold(roi_gray, 100, 255, cv2.THRESH_BINARY_INV)
+        ink_px = np.sum(dark_ink > 0)
+        if ink_px < px_count * 0.01:   # < 1% ink density = not a text bubble
+            continue
+
+        # Skip if already covered by an existing candidate (>50% overlap)
+        skip = False
+        for (ex, ey, ew, eh, _) in existing:
+            ix1, iy1 = max(x,ex), max(y,ey)
+            ix2, iy2 = min(x+rw,ex+ew), min(y+rh,ey+eh)
+            if ix2>ix1 and iy2>iy1:
+                inter = (ix2-ix1)*(iy2-iy1)
+                if inter / (rw*rh) > 0.50:
+                    skip = True
+                    break
+        if skip:
+            continue
+
+        rtype = "caption" if (y/h < 0.15 or (y+rh)/h > 0.85) and aspect > 2 else "bubble"
+        candidates.append((x, y, rw, rh, rtype))
+
+    return candidates
+
+
+def detect_bubbles_colour(panel_img, panel_area, left_margin, right_margin, nms_thresh):
+    """
+    Colour-comic bubble detection combining two complementary methods:
+
+    Method 1 — Text-cluster anchoring:
+      Find groups of text strokes, convert each to a bubble bbox via
+      sealed flood fill (or padded fallback). Always produces a bbox
+      for every text cluster found — never misses text that exists.
+
+    Method 2 — Oval outline detection:
+      Find closed smooth dark contours with white low-sat interiors
+      and some ink inside. Catches bubbles Method 1 misses (e.g. small
+      ovals, bubbles where text cluster merged badly).
+
+    Both results are merged through NMS.
+    """
+    h, w = panel_img.shape[:2]
+    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+    lab  = cv2.cvtColor(panel_img, cv2.COLOR_BGR2LAB)
+    L    = lab[:, :, 0]
+    hsv  = cv2.cvtColor(panel_img, cv2.COLOR_BGR2HSV)
+    sat  = hsv[:, :, 1]
+    lm, rm = w * left_margin, w * right_margin
+
+    candidates = []
+
+    # ── Method 1: Text clusters ───────────────────────────────────────────────
+    clusters = find_text_clusters(gray, panel_area)
+    for (tx, ty, tw, th) in clusters:
+        # Edge exclusion
+        if tx < lm and tw < w * 0.4:
+            continue
+        if (tx+tw) > (w-rm) and tw < w * 0.4:
+            continue
+
+        # Reject text on coloured backgrounds (signs, artwork labels)
+        pad_c = 10
+        roi_L   = L[max(0,ty-pad_c):min(h,ty+th+pad_c),
+                     max(0,tx-pad_c):min(w,tx+tw+pad_c)]
+        roi_sat = sat[max(0,ty-pad_c):min(h,ty+th+pad_c),
+                      max(0,tx-pad_c):min(w,tx+tw+pad_c)]
+        if roi_L.size == 0:
+            continue
+        if np.mean(roi_L) < 130:    # text on dark background
+            continue
+        if np.mean(roi_sat) > 72:   # text on coloured background (sign)
+            continue
+
+        bx, by, bw, bh = cluster_to_bubble_bbox(
+            panel_img, tx, ty, tw, th, panel_area, L, sat)
+
+        if bw < 25 or bh < 20:
+            continue
+        if bw * bh > panel_area * 0.50:
+            continue
+
+        aspect = bw / bh if bh > 0 else 1
+        rtype = "caption" if (by/h < 0.15 or (by+bh)/h > 0.85) and aspect > 2 else "bubble"
+        candidates.append((bx, by, bw, bh, rtype))
+
+    # ── Method 2: Oval outlines ───────────────────────────────────────────────
+    oval_candidates = find_oval_bubbles(
+        panel_img, panel_area, L, sat, candidates, left_margin, right_margin)
+    candidates.extend(oval_candidates)
+
+    return nms_regions(candidates, nms_thresh)
+
+def detect_bubbles_bw(panel_img, brightness, panel_area, left_margin, right_margin, nms_thresh):
+    """
+    B&W comic bubble detection — original brightness threshold approach.
+    Works well for manga and greyscale scans.
+    """
+    h, w = panel_img.shape[:2]
+    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
+
     _, light = cv2.threshold(gray, brightness, 255, cv2.THRESH_BINARY)
-    hsv = cv2.cvtColor(panel_img, cv2.COLOR_BGR2HSV)
-    _, sat, _ = cv2.split(hsv)
-# White bubbles have saturation < 40; coloured areas have saturation > 80
-    low_sat_mask = cv2.threshold(sat, 40, 255, cv2.THRESH_BINARY_INV)[1]
-    light = cv2.bitwise_and(light, low_sat_mask)
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     light = cv2.erode(light, kernel, iterations=2)
     light = remove_background(light)
     contours, _ = cv2.findContours(light, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
-    candidate_bboxes = []
+    candidates = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area < panel_area * 0.005 or area > panel_area * 0.25:
@@ -956,7 +1339,6 @@ def detect_text_regions(panel_img, brightness=220, nms_thresh=0.3,
         if aspect < 0.2 or aspect > 8.0:
             continue
 
-        # Edge exclusion
         lm = w * left_margin
         rm = w * right_margin
         if x < lm and rw < w * 0.4:
@@ -967,7 +1349,6 @@ def detect_text_regions(panel_img, brightness=220, nms_thresh=0.3,
         perimeter = cv2.arcLength(cnt, True)
         circ = (4 * math.pi * area) / (perimeter**2) if perimeter > 0 else 0
 
-        # Large low-circularity region — try splitting
         if area > panel_area * 0.08 and circ < 0.80:
             region_mask = np.zeros_like(light)
             cv2.drawContours(region_mask, [cnt], -1, 255, -1)
@@ -979,23 +1360,95 @@ def detect_text_regions(panel_img, brightness=220, nms_thresh=0.3,
                 if sw > 60 and sh > 60:
                     a = sw / sh if sh > 0 else 1
                     rtype = "caption" if (sy/h < 0.12 or (sy+sh)/h > 0.88) and a > 2 else "bubble"
-                    candidate_bboxes.append((sx, sy, sw, sh, rtype))
+                    candidates.append((sx, sy, sw, sh, rtype))
         else:
             if circ < 0.45:
                 continue
             rtype = "caption" if (y/h < 0.12 or (y+rh)/h > 0.88) and aspect > 2 else "bubble"
-            candidate_bboxes.append((x, y, rw, rh, rtype))
+            candidates.append((x, y, rw, rh, rtype))
 
-    # Add rectangular regions
+    return nms_regions(candidates, nms_thresh)
+
+
+# ── Main text region detection ───────────────────────────────────────────────
+
+def detect_text_regions(panel_img, brightness=190, nms_thresh=0.3,
+                         left_margin=0.06, right_margin=0.0):
+    if panel_img is None or panel_img.size == 0:
+        return []
+
+    h, w = panel_img.shape[:2]
+    panel_area = h * w
+
+    # Choose detection strategy based on whether image is colour or B&W
+    if is_colour_comic(panel_img):
+        candidate_bboxes = detect_bubbles_colour(
+            panel_img, panel_area, left_margin, right_margin, nms_thresh)
+    else:
+        candidate_bboxes = detect_bubbles_bw(
+            panel_img, brightness, panel_area, left_margin, right_margin, nms_thresh)
+
+    # Add rectangular regions (works for both colour and B&W)
     rect_regions = detect_rectangular_regions(panel_img, candidate_bboxes, panel_area)
     candidate_bboxes.extend(rect_regions)
 
-    # NMS
+    # Final NMS pass across all sources
     candidate_bboxes = nms_regions(candidate_bboxes, nms_thresh)
     return candidate_bboxes
 
 
 print("Detection pipeline ready.")
+
+# ── OCR spell correction (runs in Pyodide) ──────────────────────────────────
+
+import re
+
+# Common Tesseract errors on comic fonts
+_CORRECTIONS = [
+    (r'(?<![A-Z])l(?=[A-Z])', 'I'),
+    (r'(?<=[A-Z])l(?![a-z])', 'I'),
+    (r'\\b0(?=[A-Za-z])', 'O'),
+    (r'(?<=[A-Za-z])0\\b', 'O'),
+    (r'\\|', 'I'),
+    (r'(?<=\\w)1(?=\\w)', 'l'),
+    (r'\\brn\\b', 'm'),
+    (r'\\bvv\\b', 'w'),
+    (r'[\u201c\u201d]', '"'),
+    (r'[\u2018\u2019]', "\'"),
+    (r'\\.\\.\\.\\..+', '...'),
+    (r'\\bl\\b', 'I'),
+    (r'(?<![a-zA-Z])1(?![0-9])', 'I'),
+]
+
+def spell_correct(text):
+    """Fast rule-based OCR correction for comic text."""
+    if not text:
+        return text
+    for pattern, replacement in _CORRECTIONS:
+        try:
+            text = re.sub(pattern, replacement, text)
+        except Exception:
+            pass
+    # Capitalise first word if all-lowercase (Tesseract sometimes lowercases starts)
+    nl = chr(10)
+    lines = text.split(nl)
+    corrected = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and stripped[0].islower() and stripped.isupper() is False:
+            line = line.replace(stripped[0], stripped[0].upper(), 1)
+        corrected.append(line)
+    return nl.join(corrected)
+
+def correct_all_regions(regions_json):
+    """Apply spell correction to all text regions. Returns corrected JSON."""
+    regions = json.loads(regions_json)
+    for r in regions:
+        if r.get('text'):
+            r['text'] = spell_correct(r['text'])
+    return json.dumps(regions)
+
+print("Spell corrector ready.")
 `;
 
 // ═══════════════════════════════════════════════════════════════
@@ -1018,7 +1471,7 @@ async function initPyodide() {
 
         $('loading-overlay').classList.remove('show');
         setStatus('✓ Ready! Upload a comic page to begin.');
-        $('run-btn').disabled = !currentImageData;
+        $('detect-btn').disabled = !currentImageData;
 
     } catch (err) {
         $('loading-overlay').classList.remove('show');
@@ -1060,8 +1513,9 @@ async function renderPdfPage(pageNum) {
     $('pdf-goto').value = pageNum;
 
     if (pyodide) {
-        $('run-btn').disabled = false;
-        setStatus(`✓ PDF page ${pageNum} ready. Click RUN OCR!`);
+        $('detect-btn').disabled = false;
+        $('detect-all-btn').disabled = false;
+        setStatus(`✓ PDF page ${pageNum} ready. Click DETECT REGIONS!`);
     }
 }
 
@@ -1071,14 +1525,29 @@ function updatePdfNav() {
 }
 
 $('pdf-prev') && $('pdf-prev').addEventListener('click', async () => {
-    if (pdfPageNum > 1) { pdfPageNum--; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+    if (allPagesDetected) {
+        const idx = getAllPagesIdx();
+        if (idx > 0) await showPageInEditor(idx - 1);
+    } else {
+        if (pdfPageNum > 1) { pdfPageNum--; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+    }
 });
 $('pdf-next') && $('pdf-next').addEventListener('click', async () => {
-    if (pdfPageNum < pdfTotalPages) { pdfPageNum++; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+    if (allPagesDetected) {
+        const idx = getAllPagesIdx();
+        if (idx < allPagesData.length - 1) await showPageInEditor(idx + 1);
+    } else {
+        if (pdfPageNum < pdfTotalPages) { pdfPageNum++; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+    }
 });
 $('pdf-goto-btn') && $('pdf-goto-btn').addEventListener('click', async () => {
     const n = parseInt($('pdf-goto').value);
-    if (n >= 1 && n <= pdfTotalPages) { pdfPageNum = n; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+    if (allPagesDetected) {
+        const idx = allPagesData.findIndex(p => p.pageNum === n);
+        if (idx >= 0) await showPageInEditor(idx);
+    } else {
+        if (n >= 1 && n <= pdfTotalPages) { pdfPageNum = n; updatePdfNav(); await renderPdfPage(pdfPageNum); }
+    }
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -1115,6 +1584,12 @@ $('file-input').addEventListener('change', async (e) => {
             pdfDoc        = await loadingTask.promise;
             pdfTotalPages = pdfDoc.numPages;
             pdfPageNum    = 1;
+            allPagesData     = [];
+            allPagesDetected = false;
+            $('ocr-all-btn').style.display = 'none';
+            $('detect-btn').style.display  = 'block';
+            $('all-pages-hint').innerHTML  =
+                'Detect regions on all pages first,<br>then edit per page, then OCR all.';
             updatePdfNav();
             await renderPdfPage(1);
         } catch (err) {
@@ -1142,8 +1617,8 @@ $('file-input').addEventListener('change', async (e) => {
             $('canvas-placeholder').style.display = 'none';
             URL.revokeObjectURL(url);
             if (pyodide) {
-                $('run-btn').disabled = false;
-                setStatus('✓ Image loaded. Click RUN OCR!');
+                $('detect-btn').disabled = false;
+                setStatus('✓ Image loaded. Click DETECT REGIONS!');
             }
         };
         img.src = url;
@@ -1151,29 +1626,352 @@ $('file-input').addEventListener('change', async (e) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// Run pipeline
+// Button wiring
 // ═══════════════════════════════════════════════════════════════
-$('run-btn').addEventListener('click', runPipeline);
-document.addEventListener('DOMContentLoaded', () => {
-    const runAllBtn = $('run-all-btn');
-    if (runAllBtn) runAllBtn.addEventListener('click', runAllPages);
-});
-// Also wire immediately in case DOMContentLoaded already fired
+$('detect-btn').addEventListener('click', runDetection);
+$('run-btn').addEventListener('click', runOCROnEditedRegions);
 setTimeout(() => {
-    const runAllBtn = $('run-all-btn');
-    if (runAllBtn) runAllBtn.addEventListener('click', runAllPages);
+    const detectAllBtn = $('detect-all-btn');
+    if (detectAllBtn) detectAllBtn.addEventListener('click', detectAllPages);
+    const ocrAllBtn = $('ocr-all-btn');
+    if (ocrAllBtn) ocrAllBtn.addEventListener('click', ocrAllPages);
 }, 0);
+
+// ═══════════════════════════════════════════════════════════════
+// Interactive region editor
+// ═══════════════════════════════════════════════════════════════
+// editorRegions: flat list of {bbox:[x,y,w,h], type, panelIdx}
+// editorState: current tool and interaction state
+let editorRegions  = [];
+let editorResult   = null;   // last Python detection result (for panel info)
+let editorActive   = false;
+let selectedIdx    = -1;
+let currentTool    = 'select';   // 'select' | 'draw'
+let dragState      = null;       // {mode:'move'|'resize', startX, startY, origBbox, handle}
+
+const HANDLE_SIZE  = 10;
+const COLOURS = {
+    bubble:   '#22c55e',
+    caption:  '#f97316',
+    floating: '#6366f1',
+    panel:    '#3b82f6',
+};
+
+// ── Scale factor: canvas display size vs natural size ─────────────────────────
+function getCanvasScale() {
+    const canvas = $('output-canvas');
+    return canvas.getBoundingClientRect().width / canvas.width;
+}
+function toCanvasCoords(clientX, clientY) {
+    const canvas = $('output-canvas');
+    const rect   = canvas.getBoundingClientRect();
+    const scale  = getCanvasScale();
+    return {
+        x: (clientX - rect.left) / scale,
+        y: (clientY - rect.top)  / scale,
+    };
+}
+
+// ── Redraw all boxes on the overlay canvas ────────────────────────────────────
+function redrawEditor() {
+    const canvas = $('output-canvas');
+    const ctx    = canvas.getContext('2d');
+    const base   = $('base-canvas');
+
+    // Restore clean image
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(base, 0, 0);
+
+    // Draw all regions
+    for (let i = 0; i < editorRegions.length; i++) {
+        const { bbox, type } = editorRegions[i];
+        const [rx, ry, rw, rh] = bbox;
+        const col = COLOURS[type] || '#888';
+        const isSelected = i === selectedIdx;
+
+        ctx.strokeStyle = col;
+        ctx.lineWidth   = isSelected ? 3 : 2;
+        ctx.strokeRect(rx, ry, rw, rh);
+
+        // Dim fill on selected
+        if (isSelected) {
+            ctx.fillStyle = col + '22';
+            ctx.fillRect(rx, ry, rw, rh);
+            // Resize handles at corners
+            const handles = getHandles(bbox);
+            ctx.fillStyle = col;
+            for (const [hx, hy] of handles) {
+                ctx.fillRect(hx - HANDLE_SIZE/2, hy - HANDLE_SIZE/2, HANDLE_SIZE, HANDLE_SIZE);
+            }
+        }
+
+        // Type label
+        ctx.fillStyle = col;
+        ctx.font = 'bold 11px Comic Neue, cursive';
+        ctx.fillText(type, rx + 3, Math.max(ry - 3, 12));
+    }
+}
+
+function getHandles(bbox) {
+    const [rx, ry, rw, rh] = bbox;
+    return [
+        [rx,      ry],       // top-left
+        [rx+rw,   ry],       // top-right
+        [rx,      ry+rh],    // bottom-left
+        [rx+rw,   ry+rh],    // bottom-right
+    ];
+}
+
+function hitTestHandle(bbox, x, y) {
+    const handles = getHandles(bbox);
+    for (let i = 0; i < handles.length; i++) {
+        const [hx, hy] = handles[i];
+        if (Math.abs(x - hx) <= HANDLE_SIZE && Math.abs(y - hy) <= HANDLE_SIZE) return i;
+    }
+    return -1;
+}
+
+function hitTestRegion(x, y) {
+    // Iterate in reverse so topmost (last drawn) wins
+    for (let i = editorRegions.length - 1; i >= 0; i--) {
+        const [rx, ry, rw, rh] = editorRegions[i].bbox;
+        if (x >= rx && x <= rx+rw && y >= ry && y <= ry+rh) return i;
+    }
+    return -1;
+}
+
+// ── Mouse events ──────────────────────────────────────────────────────────────
+let drawStart = null;
+
+function onMouseDown(e) {
+    if (!editorActive) return;
+    e.preventDefault();
+    const { x, y } = toCanvasCoords(e.clientX, e.clientY);
+
+    if (currentTool === 'draw') {
+        drawStart = { x, y };
+        return;
+    }
+
+    // Select tool
+    if (selectedIdx >= 0) {
+        // Check resize handles first
+        const h = hitTestHandle(editorRegions[selectedIdx].bbox, x, y);
+        if (h >= 0) {
+            dragState = {
+                mode: 'resize', handleIdx: h,
+                startX: x, startY: y,
+                origBbox: [...editorRegions[selectedIdx].bbox],
+            };
+            return;
+        }
+    }
+
+    const hit = hitTestRegion(x, y);
+    if (hit >= 0) {
+        selectedIdx = hit;
+        dragState = {
+            mode: 'move',
+            startX: x, startY: y,
+            origBbox: [...editorRegions[hit].bbox],
+        };
+    } else {
+        selectedIdx = -1;
+        dragState = null;
+    }
+    redrawEditor();
+}
+
+function onMouseMove(e) {
+    if (!editorActive) return;
+    const { x, y } = toCanvasCoords(e.clientX, e.clientY);
+
+    if (currentTool === 'draw' && drawStart) {
+        // Live preview of new box
+        redrawEditor();
+        const canvas = $('output-canvas');
+        const ctx    = canvas.getContext('2d');
+        const dx = x - drawStart.x, dy = y - drawStart.y;
+        const rx = dx >= 0 ? drawStart.x : x;
+        const ry = dy >= 0 ? drawStart.y : y;
+        const rw = Math.abs(dx), rh = Math.abs(dy);
+        ctx.strokeStyle = COLOURS.bubble;
+        ctx.lineWidth   = 2;
+        ctx.setLineDash([6, 3]);
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.setLineDash([]);
+        return;
+    }
+
+    if (!dragState) return;
+
+    const dx = x - dragState.startX;
+    const dy = y - dragState.startY;
+    const ob = dragState.origBbox;
+    const reg = editorRegions[selectedIdx];
+
+    if (dragState.mode === 'move') {
+        reg.bbox = [ob[0]+dx, ob[1]+dy, ob[2], ob[3]];
+    } else if (dragState.mode === 'resize') {
+        // Each handle corner: 0=TL, 1=TR, 2=BL, 3=BR
+        let [rx, ry, rw, rh] = ob;
+        const h = dragState.handleIdx;
+        if (h === 0) { rx += dx; ry += dy; rw -= dx; rh -= dy; }
+        if (h === 1) {            ry += dy;             rw += dx; rh -= dy; }
+        if (h === 2) { rx += dx;             rw -= dx;             rh += dy; }
+        if (h === 3) {                                   rw += dx; rh += dy; }
+        // Enforce min size
+        if (rw > 20 && rh > 20) reg.bbox = [rx, ry, rw, rh];
+    }
+
+    redrawEditor();
+}
+
+function onMouseUp(e) {
+    if (!editorActive) return;
+    const { x, y } = toCanvasCoords(e.clientX, e.clientY);
+
+    if (currentTool === 'draw' && drawStart) {
+        const dx = x - drawStart.x, dy = y - drawStart.y;
+        if (Math.abs(dx) > 15 && Math.abs(dy) > 15) {
+            const rx = dx >= 0 ? drawStart.x : x;
+            const ry = dy >= 0 ? drawStart.y : y;
+            const type = $('region-type-select').value;
+            // Assign to panel 0 by default (or nearest panel)
+            const panelIdx = nearestPanel(rx, ry);
+            editorRegions.push({ bbox: [rx, ry, Math.abs(dx), Math.abs(dy)], type, panelIdx });
+            selectedIdx = editorRegions.length - 1;
+        }
+        drawStart = null;
+        redrawEditor();
+        return;
+    }
+
+    dragState = null;
+}
+
+function nearestPanel(x, y) {
+    if (!editorResult) return 0;
+    let best = 0, bestDist = Infinity;
+    editorResult.panels.forEach((p, i) => {
+        const [px, py, pw, ph] = p.bbox;
+        const cx = px + pw/2, cy = py + ph/2;
+        const dist = Math.hypot(x - cx, y - cy);
+        if (dist < bestDist) { bestDist = dist; best = i; }
+    });
+    return best;
+}
+
+// ── Toolbar buttons ───────────────────────────────────────────────────────────
+function setTool(tool) {
+    currentTool = tool;
+    $('tool-select').style.background = tool === 'select' ? 'var(--yellow)' : 'white';
+    $('tool-draw').style.background   = tool === 'draw'   ? 'var(--yellow)' : 'white';
+    $('editor-hint').textContent = tool === 'draw'
+        ? 'Click and drag to draw a new region box.'
+        : 'Click a box to select. Drag to move. Drag corners to resize.';
+    $('output-canvas').style.cursor = tool === 'draw' ? 'crosshair' : 'default';
+}
+
+$('tool-select').addEventListener('click', () => setTool('select'));
+$('tool-draw').addEventListener('click',   () => setTool('draw'));
+
+$('tool-delete').addEventListener('click', () => {
+    if (selectedIdx >= 0) {
+        editorRegions.splice(selectedIdx, 1);
+        selectedIdx = -1;
+        redrawEditor();
+    }
+});
+
+$('tool-set-type').addEventListener('click', () => {
+    if (selectedIdx >= 0) {
+        editorRegions[selectedIdx].type = $('region-type-select').value;
+        redrawEditor();
+    }
+});
+
+// Wire canvas mouse events
+$('output-canvas').addEventListener('mousedown', onMouseDown);
+$('output-canvas').addEventListener('mousemove', onMouseMove);
+$('output-canvas').addEventListener('mouseup',   onMouseUp);
+$('output-canvas').addEventListener('mouseleave', onMouseUp);
+
+// ── Activate editor after detection ──────────────────────────────────────────
+function activateEditor(result, imageBytes) {
+    editorResult  = result;
+    editorActive  = true;
+    selectedIdx   = -1;
+    currentTool   = 'select';
+
+    // Copy rendered page to base canvas
+    const overlay = $('output-canvas');
+    const base    = $('base-canvas');
+    base.width    = overlay.width;
+    base.height   = overlay.height;
+    base.style.display = 'none';   // hidden — just a snapshot
+
+    // Draw the clean image onto base canvas
+    base.getContext('2d').drawImage(overlay, 0, 0);
+
+    // Flatten all regions into editorRegions
+    editorRegions = [];
+    for (let pi = 0; pi < result.panels.length; pi++) {
+        for (const region of result.panels[pi].regions) {
+            editorRegions.push({
+                bbox:     [...region.bbox],
+                type:     region.type,
+                panelIdx: pi,
+            });
+        }
+    }
+
+    // Show editor toolbar and OCR button
+    $('editor-toolbar').style.display = 'block';
+    $('run-btn').style.display   = 'block';
+    $('run-btn').disabled        = false;
+    $('detect-btn').style.display = 'none';
+    setTool('select');
+    redrawEditor();
+
+    setStatus(`✏️ Edit regions, then click RUN OCR. (${editorRegions.length} regions detected)`);
+}
+
+// ── Push edited regions back into result structure ────────────────────────────
+function applyEditorToResult(result) {
+    // Rebuild panel regions from editorRegions
+    // Clear all regions first
+    for (const panel of result.panels) panel.regions = [];
+
+    for (const er of editorRegions) {
+        const pi = Math.min(er.panelIdx, result.panels.length - 1);
+        if (!result.panels[pi]) continue;
+        result.panels[pi].regions.push({
+            type:  er.type,
+            bbox:  er.bbox.map(Math.round),
+            text:  '',
+            confidence: 0,
+        });
+    }
+    return result;
+}
 
 // ── Shared: get detection params ─────────────────────────────────────────────
 function getParams() {
+    const ocrRadio      = document.querySelector('input[name="ocr"]:checked');
+    const regionRadio   = document.querySelector('input[name="region-order"]:checked');
+    const panelRadio    = document.querySelector('input[name="panel-order"]:checked');
+    const ocrMode       = ocrRadio     ? ocrRadio.value     : 'tesseract';
+    console.log('[params] ocrMode:', ocrMode, 'radio found:', !!ocrRadio);
     return {
         brightness:  parseInt($('brightness').value),
         panelArea:   parseFloat($('panel-area').value),
         nmsVal:      parseFloat($('nms').value),
         leftMargin:  parseFloat($('left-margin').value),
         rightMargin: parseFloat($('right-margin').value),
-        regionOrder: document.querySelector('input[name="region-order"]:checked').value,
-        panelOrder:  document.querySelector('input[name="panel-order"]:checked').value,
+        regionOrder: regionRadio ? regionRadio.value : 'ltr',
+        panelOrder:  panelRadio  ? panelRadio.value  : 'ltr',
+        ocrMode,
     };
 }
 
@@ -1294,34 +2092,237 @@ detect_pipeline(
     return { result, transcriptLines, regionCount: allRegions.length };
 }
 
-// ── Single page pipeline ──────────────────────────────────────────────────────
-async function runPipeline() {
+// ── Stage 1: Detection only (no OCR) ─────────────────────────────────────────
+async function runDetection() {
     if (!pyodide || !currentImageData) return;
-    $('run-btn').disabled = true;
-    $('transcript').value = '';
+    $('detect-btn').disabled = true;
     setProgress(5);
     setStatus('🔍 Detecting panels and bubbles...');
 
     try {
-        const params = getParams();
+        const params   = getParams();
+        const { brightness, panelArea, nmsVal, leftMargin, rightMargin } = params;
+        const canvas   = $('output-canvas');
+
+        // Draw source image onto canvas first
+        await new Promise((resolve) => {
+            const blob = new Blob([currentImageData.bytes]);
+            const url  = URL.createObjectURL(blob);
+            const img  = new Image();
+            img.onload = () => {
+                canvas.width  = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                canvas.getContext('2d').drawImage(img, 0, 0);
+                canvas.style.display = 'block';
+                $('canvas-placeholder').style.display = 'none';
+                URL.revokeObjectURL(url);
+                resolve();
+            };
+            img.src = url;
+        });
+
+        pyodide.globals.set('_img_bytes', currentImageData.bytes);
+        const jsonResult = await pyodide.runPythonAsync(`
+detect_pipeline(
+    _img_bytes,
+    bubble_brightness=${brightness},
+    min_panel_frac=${panelArea},
+    nms_threshold=${nmsVal},
+    left_margin_frac=${leftMargin},
+    right_margin_frac=${rightMargin}
+)
+        `);
+
+        const result = JSON.parse(jsonResult);
+        if (result.error) throw new Error(result.error);
+
+        // Draw panel boxes on canvas (region boxes drawn by editor)
+        const ctx = canvas.getContext('2d');
+        for (let pi = 0; pi < result.panels.length; pi++) {
+            const [px, py, pw, ph] = result.panels[pi].bbox;
+            ctx.strokeStyle = '#3b82f6';
+            ctx.lineWidth   = 3;
+            ctx.strokeRect(px, py, pw, ph);
+            ctx.fillStyle = '#3b82f6';
+            ctx.font = 'bold 14px Bangers, cursive';
+            ctx.fillText(`P${pi}`, px + 5, py + 18);
+        }
+
+        setProgress(100);
+        setTimeout(() => setProgress(0), 800);
+
+        // Hand off to editor
+        activateEditor(result, currentImageData.bytes);
+
+    } catch (err) {
+        setStatus('❌ Detection error: ' + err.message, true);
+        $('detect-btn').disabled = false;
+        setProgress(0);
+        console.error(err);
+    }
+}
+
+// ── Stage 2: OCR on (possibly edited) regions ─────────────────────────────────
+async function runOCROnEditedRegions() {
+    if (!editorResult) return;
+
+    const params = getParams();
+    if (params.ocrMode !== 'tesseract' && !trOCR) {
+        setStatus('❌ TrOCR model not loaded. Click "Load TrOCR model" in the Engine panel.', true);
+        return;
+    }
+
+    $('run-btn').disabled = true;
+    $('transcript').value = '';
+    setProgress(5);
+    setStatus('⚡ Running OCR on regions...');
+
+    try {
+
+        // Apply editor changes back into result structure
+        const result = applyEditorToResult(JSON.parse(JSON.stringify(editorResult)));
+
+        // Sort panels and regions per reading order
+        const { regionOrder, panelOrder } = params;
+        if (panelOrder === 'manga') {
+            result.panels.sort((a, b) => {
+                const ay = a.bbox[1], by2 = b.bbox[1];
+                const ah = a.bbox[3], bh = b.bbox[3];
+                if (Math.abs(ay - by2) < Math.min(ah, bh) * 0.5) return b.bbox[0] - a.bbox[0];
+                return ay - by2;
+            });
+        }
+        for (const panel of result.panels) {
+            panel.regions.sort((a, b) => {
+                const [ax, ay] = a.bbox, [bx, by] = b.bbox;
+                if (regionOrder === 'ttb') { if (Math.abs(ay-by)>30) return ay-by; return ax-bx; }
+                if (regionOrder === 'manga') { if (Math.abs(ay-by)>30) return ay-by; return bx-ax; }
+                if (Math.abs(ay-by)>30) return ay-by; return ax-bx;
+            });
+        }
+
+        const allRegions = result.panels.flatMap(p => p.regions);
+        if (allRegions.length === 0) {
+            setStatus('⚠ No regions to OCR. Draw some boxes first.');
+            $('run-btn').disabled = false;
+            setProgress(0);
+            return;
+        }
+
+        // Always create Tesseract worker (needed for hybrid mode)
         const worker = await Tesseract.createWorker('eng', 1, {});
         const canvas = $('output-canvas');
+        const ctx    = canvas.getContext('2d');
 
-        setStatus('🔍 Running detection...');
-        const { result, transcriptLines, regionCount } =
-            await processImageBytes(currentImageData.bytes, params, worker, canvas);
+        // Restore clean annotated image (no text labels yet)
+        ctx.drawImage($('base-canvas'), 0, 0);
+        // Redraw editor boxes cleanly
+        redrawEditor();
+
+        const transcriptLines = [];
+        let currentPanel = -1;
+
+        for (let i = 0; i < allRegions.length; i++) {
+            const region = allRegions[i];
+            const [rx, ry, rw, rh] = region.bbox;
+            setProgress(10 + Math.round((i / allRegions.length) * 85));
+            setStatus(`OCR region ${i+1} of ${allRegions.length}...`);
+
+            const cropCanvas = document.createElement('canvas');
+            const padding = 8;
+            cropCanvas.width  = rw + padding*2;
+            cropCanvas.height = rh + padding*2;
+            const cropCtx = cropCanvas.getContext('2d');
+            cropCtx.fillStyle = 'white';
+            cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+            cropCtx.drawImage(canvas, rx, ry, rw, rh, padding, padding, rw, rh);
+
+            const { text: cleanText, confidence } =
+                await ocrCrop(cropCanvas, worker, params.ocrMode);
+            region.text       = cleanText;
+            region.confidence = confidence;
+
+            if (cleanText) {
+                const panelIdx = result.panels.findIndex(p => p.regions.some(r => r === region));
+                if (panelIdx !== currentPanel) {
+                    transcriptLines.push(`\n[Panel ${panelIdx}]`);
+                    currentPanel = panelIdx;
+                }
+                transcriptLines.push(`  [${region.type}]: ${cleanText}`);
+                ctx.font = 'bold 11px Comic Neue, cursive';
+                ctx.fillStyle = COLOURS[region.type] || '#888';
+                ctx.fillText(cleanText.substring(0, 30), rx + 2, Math.max(ry - 3, 12));
+            }
+        }
 
         await worker.terminate();
 
+        // Deactivate editor
+        editorActive = false;
+        $('editor-toolbar').style.display = 'none';
+        $('run-btn').style.display    = 'none';
+        $('detect-btn').style.display = 'block';
+        $('detect-btn').disabled = false;
+
         currentResults = result;
-        $('transcript').value = transcriptLines.join('\n').trim();
+        // ── Auto spell correction (fast, runs in Pyodide) ──────────────────
+        setStatus('✏️ Applying spell correction...');
+        allOCRRegions = allRegions;
+
+        try {
+            const regionsJson = JSON.stringify(
+                allRegions.map(r => ({ text: r.text || '', type: r.type }))
+            );
+            pyodide.globals.set('_regions_json', regionsJson);
+            const correctedJson = await pyodide.runPythonAsync(
+                'correct_all_regions(_regions_json)'
+            );
+            const corrected = JSON.parse(correctedJson);
+
+            // Apply corrections back to region objects
+            let anyChanged = false;
+            corrected.forEach((cr, i) => {
+                if (cr.text !== allRegions[i].text) {
+                    allRegions[i].text = cr.text;
+                    anyChanged = true;
+                }
+            });
+
+            // Rebuild transcript from corrected regions
+            const correctedLines = [];
+            let curPanel = -1;
+            allRegions.forEach(region => {
+                if (region.text) {
+                    const panelIdx = result.panels.findIndex(
+                        p => p.regions.some(r => r === region));
+                    if (panelIdx !== curPanel) {
+                        correctedLines.push(`\n[Panel ${panelIdx}]`);
+                        curPanel = panelIdx;
+                    }
+                    correctedLines.push(`  [${region.type}]: ${region.text}`);
+                }
+            });
+
+            $('transcript').value = correctedLines.join('\n').trim();
+            if (anyChanged) {
+                setStatus(`✅ Done + spell-corrected! ${allRegions.length} region(s).`);
+            }
+        } catch (err) {
+            console.warn('Spell correction failed:', err);
+            $('transcript').value = transcriptLines.join('\n').trim();
+        }
+
+        // Show AI correction panel
+        $('correction-panel').style.display = 'block';
+        $('revert-btn').disabled = true;
+        if (t5Corrector) $('run-t5-btn').disabled = false;
+
         setProgress(100);
-        setStatus(`✅ Done! ${regionCount} region(s) processed.`);
         setTimeout(() => setProgress(0), 1500);
         buildDownloads([{ page: 1, result }]);
 
     } catch (err) {
-        setStatus('❌ Error: ' + err.message, true);
+        setStatus('❌ OCR error: ' + err.message, true);
         console.error(err);
     }
 
@@ -1329,27 +2330,25 @@ async function runPipeline() {
 }
 
 // ── All pages pipeline ────────────────────────────────────────────────────────
-async function runAllPages() {
+// ── Phase 1: Detect all pages ────────────────────────────────────────────────
+async function detectAllPages() {
     if (!pyodide || !pdfDoc) return;
 
-    const runAllBtn = $('run-all-btn');
-    $('run-btn').disabled    = true;
-    runAllBtn.disabled       = true;
-    $('transcript').value    = '';
+    const detectAllBtn = $('detect-all-btn');
+    const ocrAllBtn    = $('ocr-all-btn');
+    detectAllBtn.disabled = true;
+    $('detect-btn').disabled = true;
+    allPagesData = [];
+    allPagesDetected = false;
 
-    const params     = getParams();
-    const worker     = await Tesseract.createWorker('eng', 1, {});
-    const allPageResults  = [];
-    const allTranscript   = [];
-    const annotatedImages = [];   // one canvas per page
+    const { brightness, panelArea, nmsVal, leftMargin, rightMargin } = getParams();
 
     try {
         for (let pageNum = 1; pageNum <= pdfTotalPages; pageNum++) {
-            const overallPct = Math.round(((pageNum - 1) / pdfTotalPages) * 100);
-            setProgress(overallPct);
-            setStatus(`📄 Page ${pageNum} of ${pdfTotalPages} — rendering...`);
+            setProgress(Math.round(((pageNum - 1) / pdfTotalPages) * 100));
+            setStatus(`🔍 Detecting page ${pageNum} of ${pdfTotalPages}...`);
 
-            // Render PDF page to a fresh offscreen canvas
+            // Render page
             const page     = await pdfDoc.getPage(pageNum);
             const viewport = page.getViewport({ scale: 2.0 });
             const pageCanvas = document.createElement('canvas');
@@ -1357,7 +2356,7 @@ async function runAllPages() {
             pageCanvas.height = viewport.height;
             await page.render({ canvasContext: pageCanvas.getContext('2d'), viewport }).promise;
 
-            // Also update the visible canvas so user can see progress
+            // Update visible canvas
             const visCanvas = $('output-canvas');
             visCanvas.width  = viewport.width;
             visCanvas.height = viewport.height;
@@ -1367,41 +2366,301 @@ async function runAllPages() {
             $('pdf-page-label').textContent = `Page ${pageNum} / ${pdfTotalPages}`;
             pdfPageNum = pageNum;
 
+            // Run Python detection
             const imgBytes = canvasToBytes(pageCanvas);
-            setStatus(`📄 Page ${pageNum} of ${pdfTotalPages} — detecting & OCR...`);
+            pyodide.globals.set('_img_bytes', imgBytes);
+            const jsonResult = await pyodide.runPythonAsync(`
+detect_pipeline(
+    _img_bytes,
+    bubble_brightness=${brightness},
+    min_panel_frac=${panelArea},
+    nms_threshold=${nmsVal},
+    left_margin_frac=${leftMargin},
+    right_margin_frac=${rightMargin}
+)
+            `);
+            const result = JSON.parse(jsonResult);
+            if (result.error) throw new Error(`Page ${pageNum}: ${result.error}`);
 
-            const { result, transcriptLines, regionCount } =
-                await processImageBytes(imgBytes, params, worker, pageCanvas);
+            // Draw panel boxes on visible canvas
+            const ctx = visCanvas.getContext('2d');
+            for (let pi = 0; pi < result.panels.length; pi++) {
+                const [px, py, pw, ph] = result.panels[pi].bbox;
+                ctx.strokeStyle = '#3b82f6';
+                ctx.lineWidth   = 3;
+                ctx.strokeRect(px, py, pw, ph);
+                ctx.fillStyle = '#3b82f6';
+                ctx.font = 'bold 14px Bangers, cursive';
+                ctx.fillText(`P${pi}`, px + 5, py + 18);
+            }
 
-            // Copy annotations back to visible canvas
+            // Flatten regions into editor format
+            const pageEditorRegions = [];
+            for (let pi = 0; pi < result.panels.length; pi++) {
+                for (const region of result.panels[pi].regions) {
+                    pageEditorRegions.push({
+                        bbox:     [...region.bbox],
+                        type:     region.type,
+                        panelIdx: pi,
+                    });
+            }}
+
+            // Snapshot the annotated canvas
+            const snap = document.createElement('canvas');
+            snap.width  = visCanvas.width;
+            snap.height = visCanvas.height;
+            snap.getContext('2d').drawImage(visCanvas, 0, 0);
+
+            allPagesData.push({
+                pageNum,
+                imgBytes,
+                canvas:          snap,
+                detectionResult: result,
+                editorRegions:   pageEditorRegions,
+            });
+        }
+
+        allPagesDetected = true;
+        setProgress(100);
+        setTimeout(() => setProgress(0), 800);
+
+        // Switch to first page and activate editor
+        await showPageInEditor(0);
+
+        $('all-pages-hint').innerHTML =
+            `✅ ${pdfTotalPages} pages detected.<br>
+            Navigate pages to edit regions,<br>
+            then click <b>OCR ALL PAGES</b>.`;
+        ocrAllBtn.style.display = 'block';
+        ocrAllBtn.disabled      = false;
+        $('detect-btn').style.display  = 'none';
+
+    } catch (err) {
+        setStatus('❌ Detection error: ' + err.message, true);
+        console.error(err);
+        detectAllBtn.disabled    = false;
+        $('detect-btn').disabled = false;
+        setProgress(0);
+    }
+}
+
+// Show a specific allPagesData entry in the editor
+async function showPageInEditor(idx) {
+    if (idx < 0 || idx >= allPagesData.length) return;
+
+    // Save current page's editorRegions back before switching
+    if (editorActive && allPagesData.length > 0) {
+        const curIdx = allPagesData.findIndex(p => p.pageNum === pdfPageNum);
+        if (curIdx >= 0) allPagesData[curIdx].editorRegions = [...editorRegions];
+    }
+
+    const pageData = allPagesData[idx];
+    pdfPageNum = pageData.pageNum;
+    $('pdf-page-label').textContent = `Page ${pageData.pageNum} / ${pdfTotalPages}`;
+    $('pdf-goto').value = pageData.pageNum;
+    updatePdfNav();
+
+    // Restore page image on visible canvas
+    const visCanvas = $('output-canvas');
+    visCanvas.width  = pageData.canvas.width;
+    visCanvas.height = pageData.canvas.height;
+    visCanvas.style.display = 'block';
+    $('canvas-placeholder').style.display = 'none';
+
+    // Render clean image from imgBytes
+    await new Promise(resolve => {
+        const blob = new Blob([pageData.imgBytes]);
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => {
+            visCanvas.getContext('2d').drawImage(img, 0, 0);
+            URL.revokeObjectURL(url);
+            resolve();
+        };
+        img.src = url;
+    });
+
+    currentImageData = { bytes: pageData.imgBytes,
+                         width: visCanvas.width, height: visCanvas.height };
+
+    // Activate editor with this page's regions
+    activateEditor(pageData.detectionResult, pageData.imgBytes);
+    // Override editorRegions with the stored (possibly edited) ones
+    editorRegions = pageData.editorRegions.map(r => ({...r, bbox: [...r.bbox]}));
+    redrawEditor();
+
+    setStatus(`✏️ Page ${pageData.pageNum} — edit regions, navigate pages, then OCR All.`);
+}
+
+// Override Prev/Next to navigate allPagesData when in all-pages mode
+function getAllPagesIdx() {
+    return allPagesData.findIndex(p => p.pageNum === pdfPageNum);
+}
+
+// ── Phase 2: OCR all pages ────────────────────────────────────────────────────
+async function ocrAllPages() {
+    if (!allPagesDetected || allPagesData.length === 0) return;
+
+    const ocrAllBtn = $('ocr-all-btn');
+    ocrAllBtn.disabled = true;
+
+    // Save current page editorRegions
+    const curIdx = getAllPagesIdx();
+    if (curIdx >= 0) allPagesData[curIdx].editorRegions = [...editorRegions];
+
+    const params  = getParams();
+    if (params.ocrMode !== 'tesseract' && !trOCR) {
+        setStatus('❌ TrOCR not loaded. Click "Load TrOCR model" in Engine panel.', true);
+        ocrAllBtn.disabled = false;
+        return;
+    }
+    const worker  = await Tesseract.createWorker('eng', 1, {});
+    const allPageResults  = [];
+    const allTranscript   = [];
+    const annotatedImages = [];
+
+    try {
+        for (let i = 0; i < allPagesData.length; i++) {
+            const pageData = allPagesData[i];
+            setProgress(Math.round((i / allPagesData.length) * 100));
+            setStatus(`⚡ OCR page ${pageData.pageNum} of ${pdfTotalPages}...`);
+
+            // Build a result structure from the (possibly edited) editorRegions
+            const result = JSON.parse(JSON.stringify(pageData.detectionResult));
+
+            // Rebuild panel regions from editorRegions
+            for (const panel of result.panels) panel.regions = [];
+            for (const er of pageData.editorRegions) {
+                const pi = Math.min(er.panelIdx, result.panels.length - 1);
+                if (result.panels[pi]) {
+                    result.panels[pi].regions.push({
+                        type:       er.type,
+                        bbox:       er.bbox.map(Math.round),
+                        text:       '',
+                        confidence: 0,
+                    });
+                }
+            }
+
+            // Sort per reading order
+            const { regionOrder, panelOrder } = params;
+            if (panelOrder === 'manga') {
+                result.panels.sort((a, b) => {
+                    const ay = a.bbox[1], by2 = b.bbox[1];
+                    const ah = a.bbox[3], bh  = b.bbox[3];
+                    if (Math.abs(ay - by2) < Math.min(ah, bh) * 0.5) return b.bbox[0] - a.bbox[0];
+                    return ay - by2;
+                });
+            }
+            for (const panel of result.panels) {
+                panel.regions.sort((a, b) => {
+                    const [ax, ay] = a.bbox, [bx, by] = b.bbox;
+                    if (regionOrder === 'ttb') { if (Math.abs(ay-by)>30) return ay-by; return ax-bx; }
+                    if (regionOrder === 'manga') { if (Math.abs(ay-by)>30) return ay-by; return bx-ax; }
+                    if (Math.abs(ay-by)>30) return ay-by; return ax-bx;
+                });
+            }
+
+            // Create a canvas for this page to OCR from
+            const pageCanvas = document.createElement('canvas');
+            pageCanvas.width  = pageData.canvas.width;
+            pageCanvas.height = pageData.canvas.height;
+            pageCanvas.getContext('2d').drawImage(pageData.canvas, 0, 0);
+
+            // Update visible canvas
+            const visCanvas = $('output-canvas');
+            visCanvas.width  = pageCanvas.width;
+            visCanvas.height = pageCanvas.height;
             visCanvas.getContext('2d').drawImage(pageCanvas, 0, 0);
+            $('pdf-page-label').textContent = `Page ${pageData.pageNum} / ${pdfTotalPages}`;
 
-            allPageResults.push({ page: pageNum, result });
-            allTranscript.push(`\n${'═'.repeat(40)}\nPAGE ${pageNum}\n${'═'.repeat(40)}`);
+            // OCR each region
+            const allRegions    = result.panels.flatMap(p => p.regions);
+            const transcriptLines = [];
+            let curPanel = -1;
+
+            for (const region of allRegions) {
+                const [rx, ry, rw, rh] = region.bbox;
+                const crop = document.createElement('canvas');
+                const pad  = 8;
+                crop.width  = rw + pad*2;
+                crop.height = rh + pad*2;
+                const cropCtx = crop.getContext('2d');
+                cropCtx.fillStyle = 'white';
+                cropCtx.fillRect(0, 0, crop.width, crop.height);
+                cropCtx.drawImage(pageCanvas, rx, ry, rw, rh, pad, pad, rw, rh);
+
+                const { text: _t, confidence: _c } =
+                    await ocrCrop(crop, worker, params.ocrMode);
+                region.text       = _t;
+                region.confidence = _c;
+
+                if (region.text) {
+                    const pi = result.panels.findIndex(p => p.regions.some(r => r === region));
+                    if (pi !== curPanel) {
+                        transcriptLines.push(`\n[Page ${pageData.pageNum} Panel ${pi}]`);
+                        curPanel = pi;
+                    }
+                    transcriptLines.push(`  [${region.type}]: ${region.text}`);
+
+                    // Draw label on canvas
+                    const ctx = visCanvas.getContext('2d');
+                    ctx.font      = 'bold 11px Comic Neue, cursive';
+                    ctx.fillStyle = COLOURS[region.type] || '#888';
+                    ctx.fillText(region.text.substring(0, 30), rx+2, Math.max(ry-3, 12));
+                }
+            }
+
+            // Spell correct
+            if (allRegions.length > 0) {
+                try {
+                    const rj = JSON.stringify(allRegions.map(r => ({text: r.text||'', type: r.type})));
+                    pyodide.globals.set('_regions_json', rj);
+                    const cj = await pyodide.runPythonAsync('correct_all_regions(_regions_json)');
+                    JSON.parse(cj).forEach((cr, i) => { allRegions[i].text = cr.text; });
+                } catch(e) { console.warn('Spell correct failed:', e); }
+            }
+
+            allPageResults.push({ page: pageData.pageNum, result });
+            allTranscript.push(`\n${'═'.repeat(40)}\nPAGE ${pageData.pageNum}\n${'═'.repeat(40)}`);
             allTranscript.push(...transcriptLines);
-            annotatedImages.push({ pageNum, canvas: pageCanvas });
+
+            const snap = document.createElement('canvas');
+            snap.width  = visCanvas.width;
+            snap.height = visCanvas.height;
+            snap.getContext('2d').drawImage(visCanvas, 0, 0);
+            annotatedImages.push({ pageNum: pageData.pageNum, canvas: snap });
         }
 
         await worker.terminate();
 
         $('transcript').value = allTranscript.join('\n').trim();
+        allOCRRegions = allPageResults.flatMap(pr =>
+            pr.result.panels.flatMap(p => p.regions));
+
         setProgress(100);
-        const totalRegions = allPageResults.reduce(
-            (sum, p) => sum + p.result.panels.reduce(
-                (ps, pan) => ps + pan.regions.length, 0), 0);
-        setStatus(`✅ All ${pdfTotalPages} pages done! ${totalRegions} region(s) total.`);
+        const totalRegions = allOCRRegions.filter(r => r.text).length;
+        setStatus(`✅ All ${pdfTotalPages} pages OCR'd! ${totalRegions} region(s) extracted.`);
         setTimeout(() => setProgress(0), 2000);
+
+        // Reset editor state
+        editorActive = false;
+        $('editor-toolbar').style.display = 'none';
+        $('run-btn').style.display        = 'none';
+        $('detect-btn').style.display     = 'block';
+        $('detect-btn').disabled          = false;
+        $('correction-panel').style.display = 'block';
+        if (t5Corrector) $('run-t5-btn').disabled = false;
 
         buildDownloads(allPageResults, annotatedImages);
 
     } catch (err) {
-        setStatus('❌ Error on page processing: ' + err.message, true);
+        setStatus('❌ OCR error: ' + err.message, true);
         console.error(err);
         await worker.terminate();
     }
 
-    $('run-btn').disabled   = false;
-    runAllBtn.disabled      = false;
+    ocrAllBtn.disabled = false;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1516,6 +2775,383 @@ function buildDownloads(pageResults, annotatedImages) {
         area.appendChild(imgBtn);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// TrOCR — vision-based OCR engine
+// ═══════════════════════════════════════════════════════════════
+
+$('load-trocr-btn').addEventListener('click', async () => {
+    const modelName = $('trocr-model').value;
+    if (trOCR && trOCRModelName === modelName) {
+        $('trocr-status').textContent = '✅ Already loaded';
+        return;
+    }
+
+    $('load-trocr-btn').disabled = true;
+    $('trocr-status').textContent = 'Waiting for Transformers.js...';
+
+    let attempts = 0;
+    while (!window.transformersPipeline && attempts < 30) {
+        await new Promise(r => setTimeout(r, 300));
+        attempts++;
+    }
+    if (!window.transformersPipeline) {
+        $('trocr-status').textContent = '❌ Transformers.js failed';
+        $('load-trocr-btn').disabled = false;
+        return;
+    }
+
+    $('trocr-status').textContent = '📥 Downloading...';
+    try {
+        trOCR = await window.transformersPipeline(
+            'image-to-text',
+            modelName,
+            {
+                progress_callback: (p) => {
+                    if (p.status === 'downloading' && p.total) {
+                        const pct = Math.round((p.loaded / p.total) * 100);
+                        $('trocr-status').textContent = `📥 ${pct}%`;
+                    }
+                }
+            }
+        );
+        trOCRModelName = modelName;
+        $('trocr-status').textContent = '✅ Ready';
+        $('load-trocr-btn').textContent = '✅ Loaded';
+    } catch (err) {
+        $('trocr-status').textContent = '❌ Failed';
+        $('load-trocr-btn').disabled = false;
+        console.error('TrOCR load error:', err);
+    }
+});
+
+// Reload if model selection changes
+$('trocr-model').addEventListener('change', () => {
+    if ($('trocr-model').value !== trOCRModelName) {
+        trOCR = null;
+        trOCRModelName = null;
+        $('load-trocr-btn').textContent = '📥 Load TrOCR model';
+        $('load-trocr-btn').disabled = false;
+        $('trocr-status').textContent = '';
+    }
+});
+
+/**
+ * Split a canvas crop into individual text lines for TrOCR.
+ *
+ * Strategy: find rows with near-zero ink (gaps between lines) and split there.
+ * This works even when text fills most of the image height.
+ *
+ * Each output strip is also padded horizontally so TrOCR gets a wide image
+ * (it expects wide single-line strips, not tall narrow ones).
+ *
+ * Returns array of data URLs, one per detected line.
+ */
+function splitIntoLines(srcCanvas) {
+    const ctx = srcCanvas.getContext('2d');
+    const w   = srcCanvas.width;
+    const h   = srcCanvas.height;
+
+    // Work on a small downscaled version for speed
+    const SCALE  = Math.min(1, 400 / w);
+    const sw     = Math.round(w * SCALE);
+    const sh     = Math.round(h * SCALE);
+    const small  = document.createElement('canvas');
+    small.width  = sw;
+    small.height = sh;
+    small.getContext('2d').drawImage(srcCanvas, 0, 0, sw, sh);
+    const img = small.getContext('2d').getImageData(0, 0, sw, sh);
+    const d   = img.data;
+
+    // Count dark pixels per row
+    const rowDark = new Array(sh).fill(0);
+    for (let y = 0; y < sh; y++) {
+        for (let x = 0; x < sw; x++) {
+            const i = (y * sw + x) * 4;
+            const lum = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+            if (lum < 160) rowDark[y]++;
+        }
+    }
+
+    // Smooth over 3 rows
+    const smooth = rowDark.map((v, i) => {
+        const s = Math.max(0, i-1), e = Math.min(sh-1, i+1);
+        return (rowDark[s] + rowDark[i] + rowDark[e]) / 3;
+    });
+
+    const maxInk = Math.max(...smooth);
+    if (maxInk === 0) return [srcCanvas.toDataURL('image/png')];
+
+    // A "gap" row has very low ink relative to the max in this crop
+    const gapThreshold = maxInk * 0.08;
+    const isGap = smooth.map(v => v <= gapThreshold);
+
+    // Find split points: sustained gap regions (>= 3 consecutive gap rows)
+    const splitPoints = [];
+    let gapStart = null;
+    for (let y = 0; y < sh; y++) {
+        if (isGap[y] && gapStart === null) gapStart = y;
+        if (!isGap[y] && gapStart !== null) {
+            if (y - gapStart >= 3) {
+                splitPoints.push(Math.round((gapStart + y) / 2 / SCALE));
+            }
+            gapStart = null;
+        }
+    }
+
+    if (splitPoints.length === 0) {
+        // No clear gaps — split by estimated line height
+        // Comic text is typically 30–80px tall per line
+        const estLines = Math.max(1, Math.round(h / Math.max(w * 0.25, 40)));
+        if (estLines <= 1) return [srcCanvas.toDataURL('image/png')];
+        const lineH = Math.floor(h / estLines);
+        const pts = [];
+        for (let i = 1; i < estLines; i++) pts.push(i * lineH);
+        splitPoints.push(...pts);
+    }
+
+    // Build slices from split points
+    const sliceEdges = [0, ...splitPoints, h];
+    const pad = 8;
+    const MIN_LINE_H = 15;
+
+    // TrOCR needs wide images — pad horizontally to at least 2:1 width:height
+    const lines = [];
+    for (let i = 0; i < sliceEdges.length - 1; i++) {
+        const sy = sliceEdges[i];
+        const ey = sliceEdges[i + 1];
+        const lh = ey - sy;
+        if (lh < MIN_LINE_H) continue;
+
+        const padSy = Math.max(0, sy - pad);
+        const padEy = Math.min(h, ey + pad);
+        const padLh = padEy - padSy;
+
+        // Ensure width >= 2 × height so TrOCR sees a line, not a block
+        const minW  = Math.max(w, padLh * 2);
+        const lineCanvas = document.createElement('canvas');
+        lineCanvas.width  = minW;
+        lineCanvas.height = padLh;
+        const lctx = lineCanvas.getContext('2d');
+        lctx.fillStyle = 'white';
+        lctx.fillRect(0, 0, minW, padLh);
+        // Centre the text horizontally
+        const ox = Math.round((minW - w) / 2);
+        lctx.drawImage(srcCanvas, 0, padSy, w, padLh, ox, 0, w, padLh);
+        lines.push(lineCanvas.toDataURL('image/png'));
+    }
+
+    return lines.length > 0 ? lines : [srcCanvas.toDataURL('image/png')];
+}
+
+/**
+ * Unified OCR helper — runs the selected engine on a canvas crop.
+ * Returns { text, confidence } always.
+ * mode: 'tesseract' | 'trocr' | 'hybrid'
+ */
+async function ocrCrop(cropCanvas, tessWorker, mode) {
+    if (mode === 'tesseract') {
+        const { data: { text, confidence } } = await tessWorker.recognize(cropCanvas);
+        return { text: text.trim(), confidence };
+    }
+
+    if (mode === 'trocr') {
+        if (!trOCR) throw new Error('TrOCR model not loaded — click "Load TrOCR model" first.');
+
+        // Debug: log canvas dimensions and a thumbnail
+        console.log('[TrOCR] crop size:', cropCanvas.width, 'x', cropCanvas.height);
+
+        // First try whole crop — if the crop is small enough for one line, skip splitting
+        const isMultiLine = cropCanvas.height > cropCanvas.width * 0.6;
+        console.log('[TrOCR] multiline:', isMultiLine,
+            'h/w ratio:', (cropCanvas.height/cropCanvas.width).toFixed(2));
+
+        let lineUrls;
+        if (isMultiLine) {
+            lineUrls = splitIntoLines(cropCanvas);
+            console.log('[TrOCR] split into', lineUrls.length, 'lines');
+        } else {
+            lineUrls = [cropCanvas.toDataURL('image/png')];
+        }
+
+        const lines = [];
+        for (let li = 0; li < lineUrls.length; li++) {
+            // Check line isn't blank (mostly white)
+            const checkCanvas = document.createElement('canvas');
+            checkCanvas.width = 50; checkCanvas.height = 20;
+            const checkCtx = checkCanvas.getContext('2d');
+            const checkImg = new Image();
+            await new Promise(r => { checkImg.onload = r; checkImg.src = lineUrls[li]; });
+            checkCtx.drawImage(checkImg, 0, 0, 50, 20);
+            const px = checkCtx.getImageData(0, 0, 50, 20).data;
+            let darkCount = 0;
+            for (let i = 0; i < px.length; i += 4) {
+                if ((px[i] + px[i+1] + px[i+2]) / 3 < 128) darkCount++;
+            }
+            const inkRatio = darkCount / (50 * 20);
+            console.log(`[TrOCR] line ${li} ink ratio:`, inkRatio.toFixed(3));
+
+            if (inkRatio < 0.005) {
+                console.log(`[TrOCR] line ${li} is blank, skipping`);
+                continue;
+            }
+
+            const output = await trOCR(lineUrls[li], { max_new_tokens: 128 });
+            const lineText = (output[0]?.generated_text || '').trim();
+            console.log(`[TrOCR] line ${li} result:`, JSON.stringify(lineText));
+            if (lineText && lineText !== '0' && lineText !== '0 0') lines.push(lineText);
+        }
+        return { text: lines.join(' '), confidence: 95 };
+    }
+
+    if (mode === 'hybrid') {
+        // Run Tesseract first
+        const { data: { text: tessText, confidence: tessConf } } =
+            await tessWorker.recognize(cropCanvas);
+        if (tessConf >= 60) {
+            return { text: tessText.trim(), confidence: tessConf };
+        }
+        // Low confidence — try TrOCR line by line
+        if (trOCR) {
+            const lineUrls = splitIntoLines(cropCanvas);
+            const lines = [];
+            for (const url of lineUrls) {
+                const output = await trOCR(url, { max_new_tokens: 128 });
+                const lineText = (output[0]?.generated_text || '').trim();
+                if (lineText) lines.push(lineText);
+            }
+            const trText = lines.join(' ');
+            if (trText.length > 0) return { text: trText, confidence: 80 };
+        }
+        return { text: tessText.trim(), confidence: tessConf };
+    }
+
+    // Fallback
+    const { data: { text, confidence } } = await tessWorker.recognize(cropCanvas);
+    return { text: text.trim(), confidence };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AI Text Correction (Transformers.js — T5-small)
+// ═══════════════════════════════════════════════════════════════
+
+function setT5Status(msg) {
+    const el = $('t5-status');
+    if (el) el.textContent = msg;
+}
+
+// Load T5 model on demand
+$('load-t5-btn').addEventListener('click', async () => {
+    $('load-t5-btn').disabled = true;
+    setT5Status('Waiting for Transformers.js to load...');
+
+    // Wait for module to be available
+    let attempts = 0;
+    while (!window.transformersPipeline && attempts < 30) {
+        await new Promise(r => setTimeout(r, 300));
+        attempts++;
+    }
+
+    if (!window.transformersPipeline) {
+        setT5Status('❌ Transformers.js failed to load. Try refreshing.');
+        $('load-t5-btn').disabled = false;
+        return;
+    }
+
+    setT5Status('📥 Downloading T5 model (~60MB, one-time download)...');
+
+    try {
+        t5Corrector = await window.transformersPipeline(
+            'text2text-generation',
+            'Xenova/t5-small',
+            {
+                progress_callback: (p) => {
+                    if (p.status === 'downloading') {
+                        const pct = p.loaded && p.total
+                            ? Math.round((p.loaded / p.total) * 100)
+                            : '?';
+                        setT5Status(`📥 Downloading model: ${pct}%...`);
+                    }
+                }
+            }
+        );
+
+        setT5Status('✅ Model ready! Click "Fix with AI" after OCR.');
+        $('load-t5-btn').textContent = '✅ Model loaded';
+        if (allOCRRegions.length > 0) $('run-t5-btn').disabled = false;
+
+    } catch (err) {
+        setT5Status('❌ Failed to load model: ' + err.message);
+        $('load-t5-btn').disabled = false;
+        console.error(err);
+    }
+});
+
+// Run T5 correction on transcript
+$('run-t5-btn').addEventListener('click', async () => {
+    if (!t5Corrector || allOCRRegions.length === 0) return;
+
+    $('run-t5-btn').disabled = true;
+    $('revert-btn').disabled = true;
+    preCorrectText = $('transcript').value;
+
+    const regions = allOCRRegions.filter(r => r.text && r.text.trim().length > 2);
+    setT5Status(`🤖 Correcting ${regions.length} region(s)...`);
+
+    try {
+        for (let i = 0; i < regions.length; i++) {
+            const region = regions[i];
+            setT5Status(`🤖 Correcting region ${i+1} of ${regions.length}...`);
+
+            // T5 prompt for OCR correction
+            const prompt = `fix ocr errors: ${region.text}`;
+
+            const output = await t5Corrector(prompt, {
+                max_new_tokens: 128,
+                num_beams: 2,
+            });
+
+            const corrected = output[0]?.generated_text?.trim();
+            if (corrected && corrected.length > 0 && corrected.length < region.text.length * 3) {
+                region.text = corrected;
+            }
+        }
+
+        // Rebuild transcript
+        const lines = [];
+        let curPanel = -1;
+        allOCRRegions.forEach(region => {
+            if (region.text) {
+                const panelIdx = currentResults?.panels?.findIndex(
+                    p => p.regions?.some(r => r === region)) ?? -1;
+                if (panelIdx !== curPanel) {
+                    lines.push(`\n[Panel ${panelIdx}]`);
+                    curPanel = panelIdx;
+                }
+                lines.push(`  [${region.type}]: ${region.text}`);
+            }
+        });
+
+        $('transcript').value = lines.join('\n').trim();
+        setT5Status('✅ AI correction complete!');
+        $('revert-btn').disabled = false;
+        $('run-t5-btn').disabled = false;
+
+    } catch (err) {
+        setT5Status('❌ Correction error: ' + err.message);
+        console.error(err);
+        $('run-t5-btn').disabled = false;
+    }
+});
+
+// Revert to pre-correction text
+$('revert-btn').addEventListener('click', () => {
+    if (preCorrectText !== null) {
+        $('transcript').value = preCorrectText;
+        setT5Status('↩ Reverted to pre-AI text.');
+        $('revert-btn').disabled = true;
+    }
+});
 
 // ═══════════════════════════════════════════════════════════════
 // Boot
