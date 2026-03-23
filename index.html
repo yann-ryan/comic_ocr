@@ -388,13 +388,39 @@ select, input[type="text"] {
             <span class="panel-title">📂 INPUT</span>
 
             <div class="upload-zone" id="upload-zone">
-                <input type="file" id="file-input" accept=".jpg,.jpeg,.png,.tiff,.tif,.pdf">
+                <input type="file" id="file-input"
+                    accept=".jpg,.jpeg,.png,.tiff,.tif,.pdf" multiple>
                 <span class="upload-icon">🗂</span>
-                <div class="upload-label">Drop comic page here</div>
-                <div class="upload-hint">JPG, PNG, TIFF, PDF supported</div>
+                <div class="upload-label">Drop comic pages here</div>
+                <div class="upload-hint">JPG, PNG, TIFF, PDF • Select multiple images for a document</div>
             </div>
 
             <div id="file-name" style="margin-top:8px;font-size:0.8rem;font-weight:700;"></div>
+
+            <!-- Multi-image controls — shown when 2+ images loaded -->
+            <div id="img-controls" style="display:none;margin-top:10px">
+                <label class="field-label">Image Pages</label>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                    <button class="btn-download" id="img-prev" style="padding:4px 10px">◀ Prev</button>
+                    <span id="img-page-label" style="font-weight:700;font-size:0.9rem">Page 1 / 1</span>
+                    <button class="btn-download" id="img-next" style="padding:4px 10px">Next ▶</button>
+                </div>
+                <div style="margin-top:10px;border-top:2px dashed var(--ink);padding-top:10px">
+                    <button class="btn-run" id="detect-all-img-btn" disabled
+                        style="font-size:1rem;letter-spacing:2px;padding:8px;margin-top:0">
+                        🔍 DETECT ALL PAGES
+                    </button>
+                    <button class="btn-run" id="ocr-all-img-btn" disabled
+                        style="font-size:1rem;letter-spacing:2px;padding:8px;margin-top:6px;
+                               display:none;background:#2563eb">
+                        ⚡ OCR ALL PAGES
+                    </button>
+                    <div id="img-all-hint" style="margin-top:6px;font-size:0.75rem;opacity:0.7;line-height:1.5">
+                        Detect regions on all pages first,<br>
+                        then edit per page, then OCR all.
+                    </div>
+                </div>
+            </div>
 
             <!-- PDF page controls — hidden until a PDF is loaded -->
             <div id="pdf-controls" style="display:none;margin-top:10px">
@@ -515,6 +541,34 @@ select, input[type="text"] {
                 <input type="range" id="right-margin" min="0" max="0.15" value="0.0" step="0.01">
                 <span class="slider-val" id="right-margin-val">0.00</span>
             </div>
+
+            <div style="margin-top:12px;border-top:2px dashed var(--ink);padding-top:10px">
+            <span class="panel-title" style="font-size:0.8rem">✏️ TEXT DETECTION</span>
+
+            <label class="field-label" style="margin-top:8px">Min letter strokes
+                <span style="font-weight:400;text-transform:none">(higher = stricter)</span>
+            </label>
+            <div class="slider-row">
+                <input type="range" id="min-strokes" min="1" max="8" value="2" step="1">
+                <span class="slider-val" id="min-strokes-val">2</span>
+            </div>
+
+            <label class="field-label">Min stroke width px
+                <span style="font-weight:400;text-transform:none">(lower = thinner text)</span>
+            </label>
+            <div class="slider-row">
+                <input type="range" id="min-stroke-width" min="0.5" max="4.0" value="1.5" step="0.25">
+                <span class="slider-val" id="min-stroke-width-val">1.50</span>
+            </div>
+
+            <label class="field-label">Min block ink density %
+                <span style="font-weight:400;text-transform:none">(lower = sparser text)</span>
+            </label>
+            <div class="slider-row">
+                <input type="range" id="min-fill" min="0.005" max="0.08" value="0.03" step="0.005">
+                <span class="slider-val" id="min-fill-val">0.030</span>
+            </div>
+            </div>
         </div>
 
         <div class="panel">
@@ -599,33 +653,6 @@ select, input[type="text"] {
                 placeholder="Extracted text will appear here in reading order..."></textarea>
         </div>
 
-        <div class="panel" id="correction-panel" style="display:none">
-            <span class="panel-title">🤖 AI CORRECTION</span>
-
-            <div style="font-size:0.82rem;line-height:1.5;margin-bottom:10px">
-                <b>Step 1:</b> Fast spell fix runs automatically after OCR.<br>
-                <b>Step 2:</b> Click below to load a small AI model (~60MB) for
-                smarter corrections. Works on CPU — no GPU needed.
-            </div>
-
-            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-                <button class="btn-download" id="load-t5-btn"
-                    style="background:var(--yellow)">
-                    📥 Load AI model
-                </button>
-                <button class="btn-download" id="run-t5-btn" disabled
-                    style="background:#22c55e;color:white">
-                    ✨ Fix with AI
-                </button>
-                <button class="btn-download" id="revert-btn" disabled>
-                    ↩ Revert
-                </button>
-            </div>
-
-            <div id="t5-status" style="font-size:0.78rem;opacity:0.7;font-family:monospace;
-                min-height:18px;line-height:1.4"></div>
-        </div>
-
         <div class="panel">
             <span class="panel-title">💾 DOWNLOAD</span>
             <div id="download-area">
@@ -643,13 +670,14 @@ select, input[type="text"] {
 let pyodide       = null;
 let currentImageData = null;
 let currentResults   = null;
-let t5Corrector      = null;
-let preCorrectText   = null;
 let allOCRRegions    = [];
 let allPagesData     = [];
 let allPagesDetected = false;
-let trOCR            = null;   // TrOCR image-to-text pipeline
-let trOCRModelName   = null;   // currently loaded model name
+let trOCR            = null;
+let trOCRModelName   = null;
+// Multi-image document state
+let multiImages      = [];     // [{name, bytes, width, height}] for multi-image uploads
+let multiImageIdx    = 0;      // current page index into multiImages
 
 // ═══════════════════════════════════════════════════════════════
 // UI helpers
@@ -673,12 +701,13 @@ document.querySelectorAll('input[name="ocr"]').forEach(radio => {
 });
 
 // Slider value display
-['brightness','panel-area','nms','left-margin','right-margin'].forEach(id => {
+['brightness','panel-area','nms','left-margin','right-margin','min-strokes','min-stroke-width','min-fill'].forEach(id => {
     const el = $(id);
     const valEl = $(id+'-val');
     el.addEventListener('input', () => {
         valEl.textContent = parseFloat(el.value).toFixed(
-            id === 'brightness' ? 0 : 2
+            id === 'brightness' || id === 'min-strokes' ? 0 :
+            id === 'min-fill' ? 3 : 2
         );
     });
 });
@@ -693,20 +722,37 @@ import json
 import math
 
 def detect_pipeline(img_bytes, bubble_brightness=190, min_panel_frac=0.02,
-                    nms_threshold=0.3, left_margin_frac=0.06, right_margin_frac=0.0):
+                    nms_threshold=0.3, left_margin_frac=0.06, right_margin_frac=0.0,
+                    min_strokes=2, min_stroke_width=1.5, min_fill=0.03):
     arr = np.frombuffer(bytes(img_bytes), dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return json.dumps({"error": "Could not decode image"})
 
     orig_h, orig_w = img.shape[:2]
+
+    # Normalise to a working resolution:
+    # - Upscale small images (< 1500px) so detection has enough pixels
+    # - Downscale very large images (> 3000px) to avoid tiny-fraction thresholds
+    # - Leave mid-range images (1500–3000px) untouched
     scale = 1.0
-    if max(orig_h, orig_w) < 1500:
-        scale = 1500 / max(orig_h, orig_w)
+    max_dim = max(orig_h, orig_w)
+    if max_dim < 1500:
+        scale = 1500 / max_dim
         img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    elif max_dim > 3000:
+        scale = 3000 / max_dim
+        img = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
     h, w = img.shape[:2]
+    is_col = is_colour_comic(img)
+    print("[OCR] image size: " + str(w) + "x" + str(h) + " scale=" + str(round(scale,3)) + " colour=" + str(is_col))
+
     panels = detect_panels(img, min_panel_frac)
+    print("[OCR] panels found: " + str(len(panels)))
+    for pi, p in enumerate(panels):
+        print("[OCR]   panel " + str(pi) + ": " + str(p))
+
     results = []
 
     for panel in panels:
@@ -718,12 +764,19 @@ def detect_pipeline(img_bytes, bubble_brightness=190, min_panel_frac=0.02,
         y2 = min(h, py + ph + margin)
         panel_img = img[y1:y2, x1:x2]
         if panel_img.size == 0:
+            print("[OCR]   panel crop empty, skipping")
             continue
 
-        regions = detect_text_regions(
-            panel_img, bubble_brightness, nms_threshold,
-            left_margin_frac, right_margin_frac
-        )
+        try:
+            regions = detect_text_regions(
+                panel_img, bubble_brightness, nms_threshold,
+                left_margin_frac, right_margin_frac,
+                min_strokes, min_stroke_width, min_fill
+            )
+            print("[OCR]   panel " + str([px,py,pw,ph]) + " -> " + str(len(regions)) + " regions")
+        except Exception as e:
+            regions = []
+            print("[OCR]   panel ERROR: " + str(e))
 
         page_regions = []
         for (rx, ry, rw, rh, rtype) in regions:
@@ -761,19 +814,26 @@ def detect_panels(img, min_area_frac=0.02):
     closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    print("[OCR] detect_panels: " + str(len(contours)) + " contours, min_area=" + str(round(page_area*min_area_frac)))
     panels = []
+    rejected_sol = 0
+    rejected_area = 0
     for cnt in contours:
         area = cv2.contourArea(cnt)
         if area < page_area * min_area_frac:
+            rejected_area += 1
             continue
         x, y, bw, bh = cv2.boundingRect(cnt)
         solidity = area / (bw * bh) if bw * bh > 0 else 0
         if solidity < 0.70:
+            rejected_sol += 1
             continue
         panels.append([x, y, bw, bh])
 
+    print("[OCR] detect_panels: kept=" + str(len(panels)) + " rejected_area=" + str(rejected_area) + " rejected_solidity=" + str(rejected_sol))
     if not panels:
         panels = [[0, 0, w, h]]
+        print("[OCR] detect_panels: fallback to full image")
 
     panels = sort_reading_order(panels)
 
@@ -787,14 +847,12 @@ def detect_panels(img, min_area_frac=0.02):
     return sort_reading_order(panels)
 
 
-def split_panel_on_dividers(img_gray, bbox, min_line_frac=0.85):
+def split_panel_on_dividers(img_gray, bbox, min_line_frac=0.75):
     """
     Split a detected panel on genuine internal dividing lines.
-    min_line_frac is now 0.85 — a divider must span 85% of the panel
-    to qualify, preventing artwork elements (trees, buildings) from
-    being mistaken for panel borders.
-    Only splits if the candidate line is also THIN (< 3% of panel dimension)
-    and near-continuous (< 10% gaps).
+    min_line_frac: divider must span this fraction of panel height/width.
+    Lowered to 0.75 to catch panels where the divider doesn't go all the way
+    to the page edge (common in portrait+panels layouts).
     """
     x, y, pw, ph = bbox
     roi = img_gray[y:y+ph, x:x+pw]
@@ -1019,10 +1077,10 @@ def detect_rectangular_regions(panel_img, existing_regions, panel_area):
     regions = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < panel_area * 0.005 or area > panel_area * 0.25:
+        if area < max(panel_area * 0.001, 400) or area > panel_area * 0.25:
             continue
         x, y, rw, rh = cv2.boundingRect(cnt)
-        if rw < 80 or rh < 80 or rw * rh < 8000:
+        if rw < 30 or rh < 20 or rw * rh < 1000:
             continue
         aspect = rw / rh if rh > 0 else 0
         if aspect < 0.3 or aspect > 4.0:
@@ -1060,227 +1118,24 @@ def detect_rectangular_regions(panel_img, existing_regions, panel_area):
     return regions
 
 
-# ── Colour detection helper ──────────────────────────────────────────────────
+# ── Text-block detection (colour and B&W) ────────────────────────────────────
 
 def is_colour_comic(img):
-    """Detect if image is a colour comic vs B&W scan."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    mean_sat = np.mean(hsv[:, :, 1])
-    return mean_sat > 25   # colour comics typically have mean saturation > 25
+    return np.mean(hsv[:, :, 1]) > 25
 
 
-def find_text_clusters(gray, panel_area):
+def find_text_blocks(panel_img, panel_area, left_margin, right_margin, nms_thresh,
+                     min_strokes=2, min_stroke_width=1.5, min_fill=0.03):
     """
-    Find clusters of dark ink strokes that look like text.
-    Returns list of (x, y, w, h) bounding boxes.
-    """
-    _, dark = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    Detect comic text blocks by finding letter-sized ink strokes on
+    white/near-white backgrounds, then merging nearby strokes into sentence units.
 
-    stroke_mask = np.zeros_like(dark)
-    min_stroke  = 8
-    max_stroke  = panel_area * 0.004
-
-    for i in range(1, num_labels):
-        a  = stats[i, cv2.CC_STAT_AREA]
-        sw = stats[i, cv2.CC_STAT_WIDTH]
-        sh = stats[i, cv2.CC_STAT_HEIGHT]
-        if min_stroke < a < max_stroke and sw < 100 and sh < 100:
-            stroke_mask[labels == i] = 255
-
-    if np.sum(stroke_mask) == 0:
-        return []
-
-    # Dilate strokes to merge into word/line clusters
-    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (28, 4))
-    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (4, 14))
-    merged = cv2.bitwise_or(cv2.dilate(stroke_mask, kh),
-                            cv2.dilate(stroke_mask, kv))
-    kc = cv2.getStructuringElement(cv2.MORPH_RECT, (32, 32))
-    merged = cv2.morphologyEx(merged, cv2.MORPH_CLOSE, kc)
-
-    contours, _ = cv2.findContours(merged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    clusters = []
-    for cnt in contours:
-        a = cv2.contourArea(cnt)
-        if a < panel_area * 0.001:
-            continue
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        roi = stroke_mask[y:y+ch, x:x+cw]
-        density = np.sum(roi > 0) / (cw * ch) if cw * ch > 0 else 0
-        if density < 0.025:
-            continue
-        clusters.append((x, y, cw, ch))
-    return clusters
-
-
-def cluster_to_bubble_bbox(panel_img, tx, ty, tw, th, panel_area, L, sat):
-    """
-    Convert a text cluster into a bubble bounding box using a sealed
-    flood-fill on a white+low-sat mask. Falls back to padded cluster bbox.
-    Always returns a bbox — never returns None.
-    """
-    h, w = panel_img.shape[:2]
-
-    # Build white mask
-    _, bright   = cv2.threshold(L,   150, 255, cv2.THRESH_BINARY)
-    _, low_sat  = cv2.threshold(sat,  65, 255, cv2.THRESH_BINARY_INV)
-    white_mask  = cv2.bitwise_and(bright, low_sat)
-    _, med      = cv2.threshold(L,   125, 255, cv2.THRESH_BINARY)
-    _, vlow_sat = cv2.threshold(sat,  32, 255, cv2.THRESH_BINARY_INV)
-    white_mask  = cv2.bitwise_or(white_mask, cv2.bitwise_and(med, vlow_sat))
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    white_mask  = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, k, iterations=2)
-
-    # Seal edges so tails touching the border don't let fill escape
-    sealed = white_mask.copy()
-    b = 3
-    sealed[:b,:] = sealed[-b:,:] = sealed[:,:b] = sealed[:,-b:] = 0
-
-    # Try flood fill from centre of text cluster
-    seed_x = min(w-b-1, max(b, tx + tw//2))
-    seed_y = min(h-b-1, max(b, ty + th//2))
-
-    found = False
-    for dx, dy in [(0,0),(-8,0),(8,0),(0,-8),(0,8),
-                   (-15,0),(15,0),(0,-15),(0,15),
-                   (-8,-8),(8,-8),(-8,8),(8,8)]:
-        sx = max(b, min(w-b-1, seed_x+dx))
-        sy = max(b, min(h-b-1, seed_y+dy))
-        if sealed[sy, sx] > 0:
-            seed_x, seed_y = sx, sy
-            found = True
-            break
-
-    if found:
-        fm = np.zeros((h+2, w+2), dtype=np.uint8)
-        fl = sealed.copy()
-        cv2.floodFill(fl, fm, (seed_x, seed_y), 128,
-                      loDiff=(22,), upDiff=(22,),
-                      flags=cv2.FLOODFILL_FIXED_RANGE)
-        region = np.uint8(fl == 128) * 255
-        fill_area = np.sum(region > 0)
-
-        if panel_area * 0.001 < fill_area < panel_area * 0.50:
-            coords = cv2.findNonZero(region)
-            if coords is not None:
-                fx, fy, fw, fh = cv2.boundingRect(coords)
-                pad = 12
-                fx  = max(0,   fx - pad)
-                fy  = max(0,   fy - pad)
-                fw  = min(w-fx, fw + pad*2)
-                fh  = min(h-fy, fh + pad*2)
-                if fw >= tw * 1.05 and fh >= th * 1.05:
-                    return (fx, fy, fw, fh)
-
-    # Flood fill failed — use padded text cluster as fallback
-    # Use generous padding: at least 30px or 40% of the text dimension
-    pad = max(30, int(min(tw, th) * 0.4))
-    fx  = max(0,   tx - pad)
-    fy  = max(0,   ty - pad)
-    fw  = min(w-fx, tw + pad*2)
-    fh  = min(h-fy, th + pad*2)
-    return (fx, fy, fw, fh)
-
-
-def find_oval_bubbles(panel_img, panel_area, L, sat, existing, left_margin, right_margin):
-    """
-    Find speech bubbles by detecting their dark oval outlines directly.
-    Complements the text-cluster approach by catching bubbles where the
-    text cluster detection missed or merged text into the wrong group.
-    Uses Hough-like approach: find closed dark contours with light interiors.
-    """
-    h, w = panel_img.shape[:2]
-    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
-    lm, rm = w * left_margin, w * right_margin
-
-    # Find strong edges — bubble outlines are bold dark ink lines
-    edges = cv2.Canny(gray, 40, 120)
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4, 4))
-    edges = cv2.dilate(edges, k, iterations=1)
-
-    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    candidates = []
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < panel_area * 0.003 or area > panel_area * 0.42:
-            continue
-        x, y, rw, rh = cv2.boundingRect(cnt)
-        if rw < 30 or rh < 25:
-            continue
-        aspect = rw / rh if rh > 0 else 0
-        if aspect < 0.15 or aspect > 6.0:
-            continue
-        if x < lm and rw < w * 0.4:
-            continue
-        if (x+rw) > (w-rm) and rw < w * 0.4:
-            continue
-
-        # Circularity — bubble outlines are smooth
-        perimeter = cv2.arcLength(cnt, True)
-        circ = (4 * math.pi * area) / (perimeter**2) if perimeter > 0 else 0
-        if circ < 0.25:
-            continue
-
-        # Interior must be light and low-saturation
-        interior = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(interior, [cnt], -1, 255, -1)
-        # Shrink to avoid sampling the border pixels
-        k_s = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
-        interior_s = cv2.erode(interior, k_s, iterations=1)
-        px_count = np.sum(interior_s > 0)
-        if px_count < 300:
-            continue
-        mean_L   = np.mean(L[interior_s > 0])
-        mean_sat = np.mean(sat[interior_s > 0])
-        if mean_L < 160 or mean_sat > 55:
-            continue
-
-        # Must contain some text ink (rules out windows, plain white areas)
-        ink_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(ink_mask, [cnt], -1, 255, -1)
-        roi_gray = gray.copy()
-        roi_gray[ink_mask == 0] = 255
-        _, dark_ink = cv2.threshold(roi_gray, 100, 255, cv2.THRESH_BINARY_INV)
-        ink_px = np.sum(dark_ink > 0)
-        if ink_px < px_count * 0.01:   # < 1% ink density = not a text bubble
-            continue
-
-        # Skip if already covered by an existing candidate (>50% overlap)
-        skip = False
-        for (ex, ey, ew, eh, _) in existing:
-            ix1, iy1 = max(x,ex), max(y,ey)
-            ix2, iy2 = min(x+rw,ex+ew), min(y+rh,ey+eh)
-            if ix2>ix1 and iy2>iy1:
-                inter = (ix2-ix1)*(iy2-iy1)
-                if inter / (rw*rh) > 0.50:
-                    skip = True
-                    break
-        if skip:
-            continue
-
-        rtype = "caption" if (y/h < 0.15 or (y+rh)/h > 0.85) and aspect > 2 else "bubble"
-        candidates.append((x, y, rw, rh, rtype))
-
-    return candidates
-
-
-def detect_bubbles_colour(panel_img, panel_area, left_margin, right_margin, nms_thresh):
-    """
-    Colour-comic bubble detection combining two complementary methods:
-
-    Method 1 — Text-cluster anchoring:
-      Find groups of text strokes, convert each to a bubble bbox via
-      sealed flood fill (or padded fallback). Always produces a bbox
-      for every text cluster found — never misses text that exists.
-
-    Method 2 — Oval outline detection:
-      Find closed smooth dark contours with white low-sat interiors
-      and some ink inside. Catches bubbles Method 1 misses (e.g. small
-      ovals, bubbles where text cluster merged badly).
-
-    Both results are merged through NMS.
+    Key false-positive controls:
+    - Background must be bright (L > 160) AND low-saturation (sat < 50)
+      → rejects text on skin tones, coloured artwork, book spines
+    - Stroke density inside merged block must be > 2%
+    - Blocks wider than 55% of panel are split at minimum-ink column
     """
     h, w = panel_img.shape[:2]
     gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
@@ -1290,131 +1145,257 @@ def detect_bubbles_colour(panel_img, panel_area, left_margin, right_margin, nms_
     sat  = hsv[:, :, 1]
     lm, rm = w * left_margin, w * right_margin
 
-    candidates = []
+    # ── Step 1: Find letter-sized ink strokes on light backgrounds ────────────
+    _, global_dark = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)
 
-    # ── Method 1: Text clusters ───────────────────────────────────────────────
-    clusters = find_text_clusters(gray, panel_area)
-    for (tx, ty, tw, th) in clusters:
-        # Edge exclusion
-        if tx < lm and tw < w * 0.4:
-            continue
-        if (tx+tw) > (w-rm) and tw < w * 0.4:
-            continue
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        global_dark, connectivity=8)
 
-        # Reject text on coloured backgrounds (signs, artwork labels)
-        pad_c = 10
-        roi_L   = L[max(0,ty-pad_c):min(h,ty+th+pad_c),
-                     max(0,tx-pad_c):min(w,tx+tw+pad_c)]
-        roi_sat = sat[max(0,ty-pad_c):min(h,ty+th+pad_c),
-                      max(0,tx-pad_c):min(w,tx+tw+pad_c)]
+    # Scale thresholds to panel size
+    # Large manga lettering can be 3-4% of panel area per letter
+    min_stroke     = max(4, int(panel_area * 0.000003))
+    max_stroke     = max(5000, int(panel_area * 0.015))  # up to 1.5% of panel per letter
+    max_stroke_dim = max(200, int(min(h, w) * 0.15))     # up to 15% of shorter dim
+
+    # Count how many components are rejected by each filter for debugging
+    rej_size = rej_dim = rej_aspect = rej_bg = 0
+    total_comps = num_labels - 1
+
+    stroke_mask = np.zeros_like(gray)
+    for i in range(1, num_labels):
+        a  = stats[i, cv2.CC_STAT_AREA]
+        sw = stats[i, cv2.CC_STAT_WIDTH]
+        sh = stats[i, cv2.CC_STAT_HEIGHT]
+        if not (min_stroke < a < max_stroke):
+            rej_size += 1; continue
+        if not (sw < max_stroke_dim and sh < max_stroke_dim):
+            rej_dim += 1; continue
+        stroke_aspect = sw / sh if sh > 0 else 99
+        if stroke_aspect > 4.5 or stroke_aspect < 0.22:
+            rej_aspect += 1; continue
+        sx = stats[i, cv2.CC_STAT_LEFT]
+        sy = stats[i, cv2.CC_STAT_TOP]
+        # Sample background around the stroke (expand by 3px)
+        x0, y0 = max(0, sx-3), max(0, sy-3)
+        x1, y1 = min(w, sx+sw+3), min(h, sy+sh+3)
+        roi_L   = L[y0:y1, x0:x1]
+        roi_sat = sat[y0:y1, x0:x1]
         if roi_L.size == 0:
             continue
-        if np.mean(roi_L) < 130:    # text on dark background
-            continue
-        if np.mean(roi_sat) > 72:   # text on coloured background (sign)
-            continue
+        if np.mean(roi_L) < 160:
+            rej_bg += 1; continue
+        if np.mean(roi_sat) > 50:
+            rej_bg += 1; continue
+        stroke_mask[labels == i] = 255
 
-        bx, by, bw, bh = cluster_to_bubble_bbox(
-            panel_img, tx, ty, tw, th, panel_area, L, sat)
+    stroke_count = int(np.sum(stroke_mask > 0))
+    print("[TB] panel=" + str(w) + "x" + str(h) + " area=" + str(panel_area) +
+          " max_stroke=" + str(max_stroke) + " max_dim=" + str(max_stroke_dim) +
+          " total=" + str(total_comps) + " rej_size=" + str(rej_size) +
+          " rej_dim=" + str(rej_dim) + " rej_asp=" + str(rej_aspect) +
+          " rej_bg=" + str(rej_bg) + " stroke_px=" + str(stroke_count))
 
-        if bw < 25 or bh < 20:
+    if stroke_count == 0:
+        return []
+
+    # ── Step 2: Merge strokes into word clusters ──────────────────────────────
+    # Horizontal: merge letters into words
+    kw = cv2.getStructuringElement(cv2.MORPH_RECT, (18, 3))
+    # Vertical: merge word lines
+    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 10))
+    merged = cv2.bitwise_or(
+        cv2.dilate(stroke_mask, kw),
+        cv2.dilate(stroke_mask, kh))
+
+    # Close within a sentence — SMALLER than before to avoid merging adj. bubbles
+    kc = cv2.getStructuringElement(cv2.MORPH_RECT, (18, 12))
+    merged = cv2.morphologyEx(merged, cv2.MORPH_CLOSE, kc)
+
+    # ── Step 3: Count strokes per possible block location ────────────────────
+    # Pre-label individual strokes so we can count them inside each block
+    # This is the key discriminator: text has MANY compact strokes (letters),
+    # shirt lines have FEW elongated strokes
+    stroke_num, stroke_labels, stroke_stats, _ = cv2.connectedComponentsWithStats(
+        stroke_mask, connectivity=8)
+
+    # For each stroke, precompute its aspect ratio and area
+    stroke_aspects = {}
+    for i in range(1, stroke_num):
+        sw2 = stroke_stats[i, cv2.CC_STAT_WIDTH]
+        sh2 = stroke_stats[i, cv2.CC_STAT_HEIGHT]
+        sa  = stroke_stats[i, cv2.CC_STAT_AREA]
+        stroke_aspects[i] = (sw2 / sh2 if sh2 > 0 else 99, sa, sw2, sh2)
+
+    # ── Step 4: Extract blocks ────────────────────────────────────────────────
+    block_contours, _ = cv2.findContours(
+        merged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates = []
+    for cnt in block_contours:
+        bx, by, bw, bh = cv2.boundingRect(cnt)
+
+        # Scale minimum block size to panel — avoid filtering large manga text
+        min_bw = max(15, int(w * 0.01))
+        min_bh = max(8,  int(h * 0.008))
+        if bw < min_bw or bh < min_bh:
             continue
-        if bw * bh > panel_area * 0.50:
+        if bw * bh > panel_area * 0.45:
             continue
 
         aspect = bw / bh if bh > 0 else 1
-        rtype = "caption" if (by/h < 0.15 or (by+bh)/h > 0.85) and aspect > 2 else "bubble"
-        candidates.append((bx, by, bw, bh, rtype))
-
-    # ── Method 2: Oval outlines ───────────────────────────────────────────────
-    oval_candidates = find_oval_bubbles(
-        panel_img, panel_area, L, sat, candidates, left_margin, right_margin)
-    candidates.extend(oval_candidates)
-
-    return nms_regions(candidates, nms_thresh)
-
-def detect_bubbles_bw(panel_img, brightness, panel_area, left_margin, right_margin, nms_thresh):
-    """
-    B&W comic bubble detection — original brightness threshold approach.
-    Works well for manga and greyscale scans.
-    """
-    h, w = panel_img.shape[:2]
-    gray = cv2.cvtColor(panel_img, cv2.COLOR_BGR2GRAY)
-
-    _, light = cv2.threshold(gray, brightness, 255, cv2.THRESH_BINARY)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    light = cv2.erode(light, kernel, iterations=2)
-    light = remove_background(light)
-    contours, _ = cv2.findContours(light, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-    candidates = []
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < panel_area * 0.005 or area > panel_area * 0.25:
-            continue
-        x, y, rw, rh = cv2.boundingRect(cnt)
-        if rw < 60 or rh < 60:
-            continue
-        aspect = rw / rh if rh > 0 else 0
-        if aspect < 0.2 or aspect > 8.0:
+        if aspect < 0.05 or aspect > 25:
             continue
 
-        lm = w * left_margin
-        rm = w * right_margin
-        if x < lm and rw < w * 0.4:
+        if bx < lm and bw < w * 0.4:
             continue
-        if (x + rw) > (w - rm) and rw < w * 0.4:
+        if (bx + bw) > (w - rm) and bw < w * 0.4:
             continue
 
-        perimeter = cv2.arcLength(cnt, True)
-        circ = (4 * math.pi * area) / (perimeter**2) if perimeter > 0 else 0
+        # Stroke density
+        roi_s = stroke_mask[by:by+bh, bx:bx+bw]
+        density = np.sum(roi_s > 0) / (bw * bh) if bw * bh > 0 else 0
+        if density < 0.018:
+            continue
 
-        if area > panel_area * 0.08 and circ < 0.80:
-            region_mask = np.zeros_like(light)
-            cv2.drawContours(region_mask, [cnt], -1, 255, -1)
-            if rw > rh * 0.9:
-                sub_bboxes = split_wide_region(region_mask, min_area=panel_area * 0.03)
-            else:
-                sub_bboxes = split_merged_regions(region_mask)
-            for (sx, sy, sw, sh) in sub_bboxes:
-                if sw > 60 and sh > 60:
-                    a = sw / sh if sh > 0 else 1
-                    rtype = "caption" if (sy/h < 0.12 or (sy+sh)/h > 0.88) and a > 2 else "bubble"
-                    candidates.append((sx, sy, sw, sh, rtype))
-        else:
-            if circ < 0.45:
+        # ── Text quality checks using individual stroke properties ────────────
+        # Find which stroke labels appear inside this block
+        roi_labels = stroke_labels[by:by+bh, bx:bx+bw]
+        unique_strokes = set(np.unique(roi_labels)) - {0}
+
+        # 1. Minimum stroke count — text needs at least 3 letter-strokes
+        #    Shirt lines typically have 1-3 elongated strokes
+        letter_strokes = 0
+        total_stroke_area = 0
+        stroke_widths = []
+        for sid in unique_strokes:
+            sasp, sa, ssw, ssh = stroke_aspects.get(sid, (99, 0, 0, 0))
+            # Count only compact strokes (letter-shaped, not hatching)
+            if sasp < 4.0 and sasp > 0.25:
+                letter_strokes += 1
+                total_stroke_area += sa
+                # Estimate stroke width: area / longer dimension
+                stroke_widths.append(sa / max(ssw, ssh) if max(ssw, ssh) > 0 else 0)
+
+        # Need at least 2 letter-shaped strokes
+        if letter_strokes < min_strokes:
+            continue
+
+        # 2. Average stroke width: text strokes are 2-8px wide
+        #    Very thin lines (< 1.5px avg width) = hatching, not letters
+        if stroke_widths:
+            avg_width = sum(stroke_widths) / len(stroke_widths)
+            # Scale min stroke width: larger panels have thicker lettering
+        scaled_min_width = min_stroke_width * max(1.0, (panel_area / 200000) ** 0.3)
+        if avg_width < scaled_min_width:
                 continue
-            rtype = "caption" if (y/h < 0.12 or (y+rh)/h > 0.88) and aspect > 2 else "bubble"
-            candidates.append((x, y, rw, rh, rtype))
 
-    return nms_regions(candidates, nms_thresh)
+        # 3. Stroke compactness: letter strokes fill their bounding box well
+        #    Very elongated strokes (like fold lines) have low fill ratio
+        if total_stroke_area > 0 and unique_strokes:
+            avg_fill = total_stroke_area / (bw * bh) if bw * bh > 0 else 0
+            # Require at least 3% of block area is letter-stroke pixels
+            if avg_fill < min_fill:
+                continue
 
+        # ── Split wide blocks ─────────────────────────────────────────────────
+        sub_boxes = []
+        if bw > w * 0.50:
+            col_sums = np.sum(roi_s > 0, axis=0).astype(float)
+            k1d = np.ones(5) / 5
+            col_smooth = np.convolve(col_sums, k1d, mode='same')
+            mid_s = int(bw * 0.20)
+            mid_e = int(bw * 0.80)
+            mid_sums = col_smooth[mid_s:mid_e]
+            if len(mid_sums) > 0:
+                mn = np.min(mid_sums)
+                mx = np.max(col_smooth)
+                if mx > 0 and mn / mx < 0.15:
+                    sc = mid_s + int(np.argmin(mid_sums))
+                    for (sx, sw2) in [(0, sc), (sc, bw - sc)]:
+                        if sw2 >= 15:
+                            sub_boxes.append((bx + sx, by, sw2, bh))
 
-# ── Main text region detection ───────────────────────────────────────────────
+        if sub_boxes:
+            for (sx, sy2, sw2, sh2) in sub_boxes:
+                pad_x = max(8, int(sw2 * 0.10))
+                pad_y = max(6, int(sh2 * 0.20))
+                fx = max(0,   sx - pad_x)
+                fy = max(0,   sy2 - pad_y)
+                fw = min(w-fx, sw2 + pad_x*2)
+                fh = min(h-fy, sh2 + pad_y*2)
+                rtype = "caption" if (fy/h < 0.12 or (fy+fh)/h > 0.88) and fw/fh > 2.5                         else "bubble"
+                candidates.append((fx, fy, fw, fh, rtype))
+        else:
+            pad_x = max(8,  int(bw * 0.10))
+            pad_y = max(6,  int(bh * 0.20))
+            fx  = max(0,   bx - pad_x)
+            fy  = max(0,   by - pad_y)
+            fw  = min(w-fx, bw + pad_x*2)
+            fh  = min(h-fy, bh + pad_y*2)
+            rtype = "caption" if (fy/h < 0.12 or (fy+fh)/h > 0.88) and aspect > 2.5                     else "bubble"
+            candidates.append((fx, fy, fw, fh, rtype))
+
+    result = nms_regions(candidates, nms_thresh)
+
+    # ── Post-filter 1: minimum size ──────────────────────────────────────────
+    sized = []
+    for r in result:
+        bx, by, bw, bh = r[:4]
+        min_w = max(15, int(w * 0.008))
+        min_h = max(8,  int(h * 0.006))
+        if bw >= min_w and bh >= min_h and bw * bh >= max(300, int(panel_area * 0.00015)):
+            sized.append(r)
+
+    # ── Post-filter 2: background brightness check ───────────────────────────
+    # For colour comics: verify white bubble background (L>150, sat<60)
+    # For B&W comics: skip — bubbles and background are both white/grey,
+    # the stroke quality checks above are sufficient
+    is_col = is_colour_comic(panel_img)
+
+    final = []
+    for (bx, by, bw, bh, rtype) in sized:
+        if is_col:
+            # Colour: check that the background around the block is white/light
+            pad_x = max(6, int(bw * 0.20))
+            pad_y = max(5, int(bh * 0.20))
+            cx0 = max(0, bx - pad_x);  cy0 = max(0, by - pad_y)
+            cx1 = min(w, bx+bw+pad_x); cy1 = min(h, by+bh+pad_y)
+            roi_L   = L[cy0:cy1, cx0:cx1]
+            roi_sat = sat[cy0:cy1, cx0:cx1]
+            roi_g   = gray[cy0:cy1, cx0:cx1]
+            if roi_L.size == 0:
+                continue
+            not_ink = roi_g > 80
+            if np.sum(not_ink) < 20:
+                continue
+            if np.mean(roi_L[not_ink]) < 150:
+                continue
+            if np.mean(roi_sat[not_ink]) > 65:
+                continue
+        # B&W: no background check needed — stroke quality filters are enough
+        final.append((bx, by, bw, bh, rtype))
+
+    print("[OCR] find_text_blocks: raw=" + str(len(candidates)) +
+          " nms=" + str(len(result)) + " sized=" + str(len(sized)) +
+          " final=" + str(len(final)) + " colour=" + str(is_col))
+    return final
+
 
 def detect_text_regions(panel_img, brightness=190, nms_thresh=0.3,
-                         left_margin=0.06, right_margin=0.0):
+                         left_margin=0.06, right_margin=0.0,
+                         min_strokes=2, min_stroke_width=1.5, min_fill=0.03):
     if panel_img is None or panel_img.size == 0:
         return []
 
     h, w = panel_img.shape[:2]
     panel_area = h * w
 
-    # Choose detection strategy based on whether image is colour or B&W
-    if is_colour_comic(panel_img):
-        candidate_bboxes = detect_bubbles_colour(
-            panel_img, panel_area, left_margin, right_margin, nms_thresh)
-    else:
-        candidate_bboxes = detect_bubbles_bw(
-            panel_img, brightness, panel_area, left_margin, right_margin, nms_thresh)
+    # Text-block approach works for both colour and B&W comics
+    candidates = find_text_blocks(
+        panel_img, panel_area, left_margin, right_margin, nms_thresh,
+        min_strokes, min_stroke_width, min_fill)
 
-    # Add rectangular regions (works for both colour and B&W)
-    rect_regions = detect_rectangular_regions(panel_img, candidate_bboxes, panel_area)
-    candidate_bboxes.extend(rect_regions)
-
-    # Final NMS pass across all sources
-    candidate_bboxes = nms_regions(candidate_bboxes, nms_thresh)
-    return candidate_bboxes
+    return candidates
 
 
 print("Detection pipeline ready.")
@@ -1574,14 +1555,30 @@ $('pdf-goto-btn') && $('pdf-goto-btn').addEventListener('click', async () => {
 // File upload
 // ═══════════════════════════════════════════════════════════════
 $('file-input').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+    const files = Array.from(e.target.files);
+    if (!files.length) return;
 
+    // Multiple non-PDF images → treat as multi-image document
+    const imageFiles = files.filter(f =>
+        !f.name.toLowerCase().endsWith('.pdf') && f.type !== 'application/pdf');
+    const pdfFiles   = files.filter(f =>
+        f.name.toLowerCase().endsWith('.pdf') || f.type === 'application/pdf');
+
+    if (imageFiles.length > 1) {
+        await loadMultiImageDocument(imageFiles);
+        return;
+    }
+
+    const file = files[0];
     $('file-name').textContent = '📄 ' + file.name;
     const arrayBuffer = await file.arrayBuffer();
     const bytes       = new Uint8Array(arrayBuffer);
+    const isPdf = pdfFiles.length > 0;
 
-    const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
+    // Reset multi-image state
+    multiImages  = [];
+    multiImageIdx = 0;
+    $('img-controls').style.display = 'none';
 
     if (isPdf) {
         // ── PDF path ──
@@ -1992,6 +1989,10 @@ function getParams() {
         regionOrder: regionRadio ? regionRadio.value : 'ltr',
         panelOrder:  panelRadio  ? panelRadio.value  : 'ltr',
         ocrMode,
+        tessPSM:      parseInt($('tess-psm').value),
+        minStrokes:   parseInt($('min-strokes').value),
+        minStrokeW:   parseFloat($('min-stroke-width').value),
+        minFill:      parseFloat($('min-fill').value),
     };
 }
 
@@ -2008,7 +2009,7 @@ function canvasToBytes(canvas) {
 // ── Shared: detect + OCR one page worth of image bytes ───────────────────────
 async function processImageBytes(imgBytes, params, worker, pageCanvas) {
     const { brightness, panelArea, nmsVal, leftMargin, rightMargin,
-            regionOrder, panelOrder } = params;
+            regionOrder, panelOrder, minStrokes, minStrokeW, minFill } = params;
 
     pyodide.globals.set('_img_bytes', imgBytes);
     const jsonResult = await pyodide.runPythonAsync(`
@@ -2018,7 +2019,10 @@ detect_pipeline(
     min_panel_frac=${panelArea},
     nms_threshold=${nmsVal},
     left_margin_frac=${leftMargin},
-    right_margin_frac=${rightMargin}
+    right_margin_frac=${rightMargin},
+    min_strokes=${minStrokes},
+    min_stroke_width=${minStrokeW},
+    min_fill=${minFill}
 )
     `);
 
@@ -2091,10 +2095,10 @@ detect_pipeline(
         cropCtx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
         cropCtx.drawImage(pageCanvas, rx, ry, rw, rh, padding, padding, rw, rh);
 
-        const { data: { text, confidence } } = await worker.recognize(cropCanvas);
-        const cleanText = text.trim();
+        const { text: cleanText, confidence: _c2 } =
+            await ocrCrop(cropCanvas, worker, params.ocrMode);
         region.text       = cleanText;
-        region.confidence = confidence;
+        region.confidence = _c2;
 
         if (cleanText) {
             const panelIdx = result.panels.findIndex(p => p.regions.some(r => r === region));
@@ -2121,7 +2125,8 @@ async function runDetection() {
 
     try {
         const params   = getParams();
-        const { brightness, panelArea, nmsVal, leftMargin, rightMargin } = params;
+        const { brightness, panelArea, nmsVal, leftMargin, rightMargin,
+            minStrokes, minStrokeW, minFill } = params;
         const canvas   = $('output-canvas');
 
         // Draw source image onto canvas first
@@ -2149,7 +2154,10 @@ detect_pipeline(
     min_panel_frac=${panelArea},
     nms_threshold=${nmsVal},
     left_margin_frac=${leftMargin},
-    right_margin_frac=${rightMargin}
+    right_margin_frac=${rightMargin},
+    min_strokes=${minStrokes},
+    min_stroke_width=${minStrokeW},
+    min_fill=${minFill}
 )
         `);
 
@@ -2286,58 +2294,8 @@ async function runOCROnEditedRegions() {
         $('detect-btn').disabled = false;
 
         currentResults = result;
-        // ── Auto spell correction (fast, runs in Pyodide) ──────────────────
-        setStatus('✏️ Applying spell correction...');
         allOCRRegions = allRegions;
-
-        try {
-            const regionsJson = JSON.stringify(
-                allRegions.map(r => ({ text: r.text || '', type: r.type }))
-            );
-            pyodide.globals.set('_regions_json', regionsJson);
-            const correctedJson = await pyodide.runPythonAsync(
-                'correct_all_regions(_regions_json)'
-            );
-            const corrected = JSON.parse(correctedJson);
-
-            // Apply corrections back to region objects
-            let anyChanged = false;
-            corrected.forEach((cr, i) => {
-                if (cr.text !== allRegions[i].text) {
-                    allRegions[i].text = cr.text;
-                    anyChanged = true;
-                }
-            });
-
-            // Rebuild transcript from corrected regions
-            const correctedLines = [];
-            let curPanel = -1;
-            allRegions.forEach(region => {
-                if (region.text) {
-                    const panelIdx = result.panels.findIndex(
-                        p => p.regions.some(r => r === region));
-                    if (panelIdx !== curPanel) {
-                        correctedLines.push(`\n[Panel ${panelIdx}]`);
-                        curPanel = panelIdx;
-                    }
-                    correctedLines.push(`  [${region.type}]: ${region.text}`);
-                }
-            });
-
-            $('transcript').value = correctedLines.join('\n').trim();
-            if (anyChanged) {
-                setStatus(`✅ Done + spell-corrected! ${allRegions.length} region(s).`);
-            }
-        } catch (err) {
-            console.warn('Spell correction failed:', err);
-            $('transcript').value = transcriptLines.join('\n').trim();
-        }
-
-        // Show AI correction panel
-        $('correction-panel').style.display = 'block';
-        $('revert-btn').disabled = true;
-        if (t5Corrector) $('run-t5-btn').disabled = false;
-
+        $('transcript').value = transcriptLines.join('\n').trim();
         setProgress(100);
         setTimeout(() => setProgress(0), 1500);
         buildDownloads([{ page: 1, result }]);
@@ -2352,40 +2310,68 @@ async function runOCROnEditedRegions() {
 
 // ── All pages pipeline ────────────────────────────────────────────────────────
 // ── Phase 1: Detect all pages ────────────────────────────────────────────────
-async function detectAllPages() {
-    if (!pyodide || !pdfDoc) return;
+async function detectAllPages(opts = {}) {
+    const sourceType = opts.sourceType || (multiImages.length > 1 ? 'images' : 'pdf');
+    const isImages   = sourceType === 'images';
+    const totalPages = isImages ? multiImages.length : pdfTotalPages;
 
-    const detectAllBtn = $('detect-all-btn');
-    const ocrAllBtn    = $('ocr-all-btn');
-    detectAllBtn.disabled = true;
+    if (!pyodide) return;
+    if (!isImages && !pdfDoc) return;
+
+    const detectAllBtn = isImages ? $('detect-all-img-btn') : $('detect-all-btn');
+    const ocrAllBtn    = isImages ? $('ocr-all-img-btn')   : $('ocr-all-btn');
+    if (detectAllBtn) detectAllBtn.disabled = true;
     $('detect-btn').disabled = true;
     allPagesData = [];
     allPagesDetected = false;
 
-    const { brightness, panelArea, nmsVal, leftMargin, rightMargin } = getParams();
+    const { brightness, panelArea, nmsVal, leftMargin, rightMargin,
+    minStrokes, minStrokeW, minFill } = getParams();
 
     try {
-        for (let pageNum = 1; pageNum <= pdfTotalPages; pageNum++) {
-            setProgress(Math.round(((pageNum - 1) / pdfTotalPages) * 100));
-            setStatus(`🔍 Detecting page ${pageNum} of ${pdfTotalPages}...`);
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+            setProgress(Math.round(((pageNum - 1) / totalPages) * 100));
+            setStatus(`🔍 Detecting page ${pageNum} of ${totalPages}...`);
 
-            // Render page
-            const page     = await pdfDoc.getPage(pageNum);
-            const viewport = page.getViewport({ scale: 2.0 });
-            const pageCanvas = document.createElement('canvas');
-            pageCanvas.width  = viewport.width;
-            pageCanvas.height = viewport.height;
-            await page.render({ canvasContext: pageCanvas.getContext('2d'), viewport }).promise;
+            const visCanvas = $('output-canvas');
+            let pageCanvas;
+
+            if (isImages) {
+                // Load from multiImages array
+                const pg = multiImages[pageNum - 1];
+                pageCanvas = document.createElement('canvas');
+                pageCanvas.width  = pg.width;
+                pageCanvas.height = pg.height;
+                await new Promise(resolve => {
+                    const blob = new Blob([pg.bytes]);
+                    const url  = URL.createObjectURL(blob);
+                    const img  = new Image();
+                    img.onload = () => {
+                        pageCanvas.getContext('2d').drawImage(img, 0, 0);
+                        URL.revokeObjectURL(url); resolve();
+                    };
+                    img.src = url;
+                });
+            } else {
+                // Render PDF page
+                const page     = await pdfDoc.getPage(pageNum);
+                const viewport = page.getViewport({ scale: 2.0 });
+                pageCanvas = document.createElement('canvas');
+                pageCanvas.width  = viewport.width;
+                pageCanvas.height = viewport.height;
+                await page.render({ canvasContext: pageCanvas.getContext('2d'), viewport }).promise;
+            }
 
             // Update visible canvas
-            const visCanvas = $('output-canvas');
-            visCanvas.width  = viewport.width;
-            visCanvas.height = viewport.height;
+            visCanvas.width  = pageCanvas.width;
+            visCanvas.height = pageCanvas.height;
             visCanvas.getContext('2d').drawImage(pageCanvas, 0, 0);
             visCanvas.style.display = 'block';
             $('canvas-placeholder').style.display = 'none';
-            $('pdf-page-label').textContent = `Page ${pageNum} / ${pdfTotalPages}`;
+            const pageLabel = isImages ? $('img-page-label') : $('pdf-page-label');
+            if (pageLabel) pageLabel.textContent = `Page ${pageNum} / ${totalPages}`;
             pdfPageNum = pageNum;
+            if (isImages) multiImageIdx = pageNum - 1;
 
             // Run Python detection
             const imgBytes = canvasToBytes(pageCanvas);
@@ -2397,7 +2383,10 @@ detect_pipeline(
     min_panel_frac=${panelArea},
     nms_threshold=${nmsVal},
     left_margin_frac=${leftMargin},
-    right_margin_frac=${rightMargin}
+    right_margin_frac=${rightMargin},
+    min_strokes=${minStrokes},
+    min_stroke_width=${minStrokeW},
+    min_fill=${minFill}
 )
             `);
             const result = JSON.parse(jsonResult);
@@ -2448,18 +2437,19 @@ detect_pipeline(
         // Switch to first page and activate editor
         await showPageInEditor(0);
 
-        $('all-pages-hint').innerHTML =
-            `✅ ${pdfTotalPages} pages detected.<br>
+        const hintEl    = isImages ? $('img-all-hint')    : $('all-pages-hint');
+        const ocrBtnEl  = isImages ? $('ocr-all-img-btn') : ocrAllBtn;
+        if (hintEl) hintEl.innerHTML =
+            `✅ ${totalPages} pages detected.<br>
             Navigate pages to edit regions,<br>
             then click <b>OCR ALL PAGES</b>.`;
-        ocrAllBtn.style.display = 'block';
-        ocrAllBtn.disabled      = false;
+        if (ocrBtnEl) { ocrBtnEl.style.display = 'block'; ocrBtnEl.disabled = false; }
         $('detect-btn').style.display  = 'none';
 
     } catch (err) {
         setStatus('❌ Detection error: ' + err.message, true);
         console.error(err);
-        detectAllBtn.disabled    = false;
+        if (detectAllBtn) detectAllBtn.disabled = false;
         $('detect-btn').disabled = false;
         setProgress(0);
     }
@@ -2469,17 +2459,30 @@ detect_pipeline(
 async function showPageInEditor(idx) {
     if (idx < 0 || idx >= allPagesData.length) return;
 
-    // Save current page's editorRegions back before switching
-    if (editorActive && allPagesData.length > 0) {
-        const curIdx = allPagesData.findIndex(p => p.pageNum === pdfPageNum);
-        if (curIdx >= 0) allPagesData[curIdx].editorRegions = [...editorRegions];
+    // Save current page's editorRegions back before switching —
+    // but only if we actually have regions to save (prevents wiping
+    // freshly detected regions when showPageInEditor is first called
+    // after detectAllPages finishes)
+    if (editorRegions.length > 0) {
+        const saveIdx = allPagesData.findIndex(p => p.pageNum === pdfPageNum);
+        if (saveIdx >= 0) allPagesData[saveIdx].editorRegions = [...editorRegions];
     }
 
     const pageData = allPagesData[idx];
-    pdfPageNum = pageData.pageNum;
-    $('pdf-page-label').textContent = `Page ${pageData.pageNum} / ${pdfTotalPages}`;
-    $('pdf-goto').value = pageData.pageNum;
+    pdfPageNum      = pageData.pageNum;
+    multiImageIdx   = pageData.pageNum - 1;   // keep in sync for multi-image mode
+
+    // Update whichever nav label is visible
+    const pdfLabel = $('pdf-page-label');
+    const imgLabel = $('img-page-label');
+    const labelText = `Page ${pageData.pageNum} / ${allPagesData.length}`;
+    if (pdfLabel) pdfLabel.textContent = labelText;
+    if (imgLabel) imgLabel.textContent = labelText;
+
+    const pdfGoto = $('pdf-goto');
+    if (pdfGoto) pdfGoto.value = pageData.pageNum;
     updatePdfNav();
+    updateMultiImageNav();
 
     // Restore page image on visible canvas
     const visCanvas = $('output-canvas');
@@ -2522,8 +2525,9 @@ function getAllPagesIdx() {
 async function ocrAllPages() {
     if (!allPagesDetected || allPagesData.length === 0) return;
 
-    const ocrAllBtn = $('ocr-all-btn');
-    ocrAllBtn.disabled = true;
+    const isImgMode = multiImages.length > 1;
+    const ocrAllBtn = isImgMode ? $('ocr-all-img-btn') : $('ocr-all-btn');
+    if (ocrAllBtn) ocrAllBtn.disabled = true;
 
     // Save current page editorRegions
     const curIdx = getAllPagesIdx();
@@ -2633,16 +2637,6 @@ async function ocrAllPages() {
                 }
             }
 
-            // Spell correct
-            if (allRegions.length > 0) {
-                try {
-                    const rj = JSON.stringify(allRegions.map(r => ({text: r.text||'', type: r.type})));
-                    pyodide.globals.set('_regions_json', rj);
-                    const cj = await pyodide.runPythonAsync('correct_all_regions(_regions_json)');
-                    JSON.parse(cj).forEach((cr, i) => { allRegions[i].text = cr.text; });
-                } catch(e) { console.warn('Spell correct failed:', e); }
-            }
-
             allPageResults.push({ page: pageData.pageNum, result });
             allTranscript.push(`\n${'═'.repeat(40)}\nPAGE ${pageData.pageNum}\n${'═'.repeat(40)}`);
             allTranscript.push(...transcriptLines);
@@ -2671,9 +2665,6 @@ async function ocrAllPages() {
         $('run-btn').style.display        = 'none';
         $('detect-btn').style.display     = 'block';
         $('detect-btn').disabled          = false;
-        $('correction-panel').style.display = 'block';
-        if (t5Corrector) $('run-t5-btn').disabled = false;
-
         buildDownloads(allPageResults, annotatedImages);
 
     } catch (err) {
@@ -2967,17 +2958,15 @@ function splitIntoLines(srcCanvas) {
 }
 
 /**
- * Preprocess a canvas crop for cleaner OCR on B&W manga/comics.
+ * Preprocess a canvas crop for cleaner OCR.
  *
- * Steps:
- * 1. Convert to greyscale and binarise (Otsu-like threshold)
- * 2. Find connected dark components
- * 3. Remove components that are too large to be letters (artwork blobs)
- *    or too small to be letters (noise dots)
- * 4. Return a clean black-on-white canvas
+ * Strategy:
+ * 1. Flood-fill from the crop centre to find the white bubble interior mask
+ * 2. Zero out all pixels outside the bubble interior (replace with white)
+ * 3. Apply connected-component filtering to keep only letter-sized ink blobs
  *
- * This dramatically reduces noise from hatching, shadows, and artwork
- * that bleeds into detected text regions.
+ * This eliminates artwork, hatching, and background that bleeds into the
+ * bounding box but lies outside the actual speech bubble.
  */
 function preprocessCropForOCR(srcCanvas) {
     const w = srcCanvas.width;
@@ -2993,90 +2982,160 @@ function preprocessCropForOCR(srcCanvas) {
     const imgData = ctx.getImageData(0, 0, w, h);
     const d = imgData.data;
 
-    // Step 1: convert to greyscale
+    // ── Step 1: Greyscale + Otsu threshold ───────────────────────────────────
     const grey = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) {
-        const r = d[i*4], g = d[i*4+1], b = d[i*4+2];
-        grey[i] = Math.round(0.299*r + 0.587*g + 0.114*b);
+        grey[i] = Math.round(0.299*d[i*4] + 0.587*d[i*4+1] + 0.114*d[i*4+2]);
     }
 
-    // Step 2: Otsu threshold
     const hist = new Array(256).fill(0);
-    for (let v of grey) hist[v]++;
+    for (const v of grey) hist[v]++;
     let sumAll = 0;
     for (let i = 0; i < 256; i++) sumAll += i * hist[i];
     let sumB = 0, wB = 0, maxVar = 0, thresh = 128;
     for (let t = 0; t < 256; t++) {
         wB += hist[t];
-        if (wB === 0) continue;
-        const wF = w * h - wB;
-        if (wF === 0) break;
+        if (!wB || wB === area) continue;
+        const wF = area - wB;
         sumB += t * hist[t];
-        const mB = sumB / wB;
-        const mF = (sumAll - sumB) / wF;
+        const mB = sumB / wB, mF = (sumAll - sumB) / wF;
         const v = wB * wF * (mB - mF) * (mB - mF);
         if (v > maxVar) { maxVar = v; thresh = t; }
     }
 
-    // Step 3: binarise — dark pixels = ink
-    const binary = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-        binary[i] = grey[i] < thresh ? 1 : 0;
+    // binary: 1 = white/light, 0 = dark ink
+    const isWhite = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) isWhite[i] = grey[i] >= thresh ? 1 : 0;
+
+    // ── Step 2: Flood-fill from centre to find bubble interior ───────────────
+    // Try seeds from the centre, expanding outward if centre is dark
+    const cx = Math.floor(w / 2), cy = Math.floor(h / 2);
+    const seeds = [[cx, cy]];
+    for (let r = 5; r <= Math.min(w, h) / 3; r += 5) {
+        seeds.push([cx, cy-r], [cx, cy+r], [cx-r, cy], [cx+r, cy]);
     }
 
-    // Step 4: simple flood-fill connected components to find blob sizes
-    // Use max letter size heuristic: letters are typically 8–200px wide/tall
-    const minLetterArea = 12;
-    const maxLetterArea = area * 0.08;  // no single letter > 8% of crop
+    let bubbleMask = null;
+    for (const [sx, sy] of seeds) {
+        const six = Math.max(0, Math.min(w-1, sx));
+        const siy = Math.max(0, Math.min(h-1, sy));
+        if (!isWhite[siy*w + six]) continue;
 
-    const labels = new Int32Array(w * h).fill(-1);
-    let labelCount = 0;
-    const blobAreas = [];
-
-    for (let start = 0; start < w * h; start++) {
-        if (binary[start] === 0 || labels[start] !== -1) continue;
-        // BFS
-        const queue = [start];
-        labels[start] = labelCount;
-        let area2 = 0;
-        let qi = 0;
+        // BFS flood fill on white pixels
+        const visited = new Uint8Array(w * h);
+        const queue = [siy*w + six];
+        visited[siy*w + six] = 1;
+        let qi = 0, fillCount = 0;
         while (qi < queue.length) {
             const idx = queue[qi++];
-            area2++;
+            fillCount++;
             const x = idx % w, y = Math.floor(idx / w);
-            const neighbours = [];
-            if (x > 0)   neighbours.push(idx - 1);
-            if (x < w-1) neighbours.push(idx + 1);
-            if (y > 0)   neighbours.push(idx - w);
-            if (y < h-1) neighbours.push(idx + w);
-            for (const n of neighbours) {
-                if (binary[n] === 1 && labels[n] === -1) {
-                    labels[n] = labelCount;
-                    queue.push(n);
+            for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                const nx = x+dx, ny = y+dy;
+                if (nx<0||nx>=w||ny<0||ny>=h) continue;
+                const ni = ny*w+nx;
+                if (!visited[ni] && isWhite[ni]) {
+                    visited[ni] = 1;
+                    queue.push(ni);
                 }
             }
         }
-        blobAreas.push(area2);
-        labelCount++;
+
+        // Accept fill that's big enough to be a bubble interior
+        // but not so big it escaped into the background (> 80% = escaped)
+        if (fillCount > area * 0.05 && fillCount < area * 0.80) {
+            bubbleMask = visited;
+            break;
+        }
     }
 
-    // Step 5: rebuild image keeping only letter-sized blobs
+    // ── Step 3: Build output ──────────────────────────────────────────────────
     const out = ctx.createImageData(w, h);
     const od = out.data;
-    // Default: white background
-    for (let i = 0; i < od.length; i += 4) {
-        od[i] = od[i+1] = od[i+2] = 255; od[i+3] = 255;
-    }
-    for (let i = 0; i < w * h; i++) {
-        if (labels[i] >= 0) {
-            const a = blobAreas[labels[i]];
-            if (a >= minLetterArea && a <= maxLetterArea) {
-                // Keep this pixel as black
-                od[i*4] = od[i*4+1] = od[i*4+2] = 0;
+
+    if (bubbleMask) {
+        // Expand mask slightly to include ink on bubble border
+        const expanded = new Uint8Array(w * h);
+        const PAD = 6;
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                if (!bubbleMask[y*w+x]) continue;
+                for (let dy = -PAD; dy <= PAD; dy++) {
+                    for (let dx = -PAD; dx <= PAD; dx++) {
+                        const nx = x+dx, ny = y+dy;
+                        if (nx>=0&&nx<w&&ny>=0&&ny<h) expanded[ny*w+nx] = 1;
+                    }
+                }
             }
+        }
+
+        // Pixels outside bubble → white; inside → keep original grey
+        for (let i = 0; i < w * h; i++) {
+            if (expanded[i]) {
+                const g = grey[i];
+                od[i*4] = od[i*4+1] = od[i*4+2] = g;
+            } else {
+                od[i*4] = od[i*4+1] = od[i*4+2] = 255; // white out
+            }
+            od[i*4+3] = 255;
+        }
+    } else {
+        // No clear bubble interior found — just greyscale
+        for (let i = 0; i < w * h; i++) {
+            od[i*4] = od[i*4+1] = od[i*4+2] = grey[i];
+            od[i*4+3] = 255;
         }
     }
     ctx.putImageData(out, 0, 0);
+
+    // ── Step 4: Connected component filter — remove non-letter blobs ──────────
+    // Re-read after masking
+    const img2 = ctx.getImageData(0, 0, w, h);
+    const d2 = img2.data;
+
+    // Re-threshold (bubble interior is now clean)
+    const grey2 = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+        grey2[i] = Math.round(0.299*d2[i*4] + 0.587*d2[i*4+1] + 0.114*d2[i*4+2]);
+    }
+    const binary2 = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) binary2[i] = grey2[i] < thresh ? 1 : 0;
+
+    // Label connected dark components
+    const labels2 = new Int32Array(w * h).fill(-1);
+    const blobAreas = [];
+    let lc = 0;
+    for (let start = 0; start < w * h; start++) {
+        if (!binary2[start] || labels2[start] !== -1) continue;
+        const queue = [start]; labels2[start] = lc; let a = 0, qi = 0;
+        while (qi < queue.length) {
+            const idx = queue[qi++]; a++;
+            const x = idx % w, y = Math.floor(idx / w);
+            for (const n of [idx-1, idx+1, idx-w, idx+w]) {
+                if (n>=0 && n<w*h && binary2[n] && labels2[n]===-1) {
+                    labels2[n] = lc; queue.push(n);
+                }
+            }
+        }
+        blobAreas.push(a); lc++;
+    }
+
+    const minLetterArea = 8;
+    const maxLetterArea = area * 0.12;
+    const out2 = ctx.createImageData(w, h);
+    const od2 = out2.data;
+    for (let i = 0; i < out2.data.length; i += 4) {
+        od2[i] = od2[i+1] = od2[i+2] = 255; od2[i+3] = 255;
+    }
+    for (let i = 0; i < w * h; i++) {
+        if (labels2[i] >= 0) {
+            const a = blobAreas[labels2[i]];
+            if (a >= minLetterArea && a <= maxLetterArea) {
+                od2[i*4] = od2[i*4+1] = od2[i*4+2] = 0;
+            }
+        }
+    }
+    ctx.putImageData(out2, 0, 0);
     return tmpCanvas;
 }
 
@@ -3088,8 +3147,8 @@ function preprocessCropForOCR(srcCanvas) {
 async function ocrCrop(cropCanvas, tessWorker, mode) {
     if (mode === 'tesseract') {
         const clean = preprocessCropForOCR(cropCanvas);
-        const { data: { text, confidence } } = await tessWorker.recognize(clean);
-        return { text: text.trim(), confidence };
+        const result2 = await tessWorker.recognize(clean);
+        return { text: result2.data.text.trim(), confidence: result2.data.confidence };
     }
 
     if (mode === 'trocr') {
@@ -3170,126 +3229,134 @@ async function ocrCrop(cropCanvas, tessWorker, mode) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// AI Text Correction (Transformers.js — T5-small)
+// Multi-image document
 // ═══════════════════════════════════════════════════════════════
 
-function setT5Status(msg) {
-    const el = $('t5-status');
-    if (el) el.textContent = msg;
+async function loadMultiImageDocument(files) {
+    // Sort files by name for correct page order
+    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+    $('file-name').textContent = `📚 ${files.length} images loaded`;
+    setStatus(`Loading ${files.length} images...`);
+
+    multiImages   = [];
+    multiImageIdx = 0;
+    allPagesData  = [];
+    allPagesDetected = false;
+    pdfDoc = null;
+
+    for (let i = 0; i < files.length; i++) {
+        setProgress(Math.round((i / files.length) * 80));
+        const ab    = await files[i].arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        // Get dimensions by drawing to a temp canvas
+        const dims = await new Promise(resolve => {
+            const blob = new Blob([bytes], { type: files[i].type });
+            const url  = URL.createObjectURL(blob);
+            const img  = new Image();
+            img.onload = () => { resolve({ w: img.naturalWidth, h: img.naturalHeight }); URL.revokeObjectURL(url); };
+            img.src = url;
+        });
+        multiImages.push({ name: files[i].name, bytes, width: dims.w, height: dims.h });
+    }
+
+    setProgress(100);
+    setTimeout(() => setProgress(0), 600);
+
+    // Show controls and load first page
+    $('pdf-controls').style.display  = 'none';
+    $('img-controls').style.display  = 'block';
+    $('ocr-all-img-btn').style.display = 'none';
+    $('img-all-hint').innerHTML =
+        'Detect regions on all pages first,<br>then edit per page, then OCR all.';
+
+    pdfTotalPages = multiImages.length;
+    await showMultiImagePage(0);
+
+    if (pyodide) {
+        $('detect-all-img-btn').disabled = false;
+        $('detect-btn').disabled = false;
+    }
 }
 
-// Load T5 model on demand
-$('load-t5-btn').addEventListener('click', async () => {
-    $('load-t5-btn').disabled = true;
-    setT5Status('Waiting for Transformers.js to load...');
+async function showMultiImagePage(idx) {
+    if (idx < 0 || idx >= multiImages.length) return;
 
-    // Wait for module to be available
-    let attempts = 0;
-    while (!window.transformersPipeline && attempts < 30) {
-        await new Promise(r => setTimeout(r, 300));
-        attempts++;
+    // Save current editorRegions if in edit mode
+    if (allPagesDetected && allPagesData.length > 0) {
+        const curIdx = allPagesData.findIndex(p => p.pageNum === multiImageIdx + 1);
+        if (curIdx >= 0) allPagesData[curIdx].editorRegions = [...editorRegions];
     }
 
-    if (!window.transformersPipeline) {
-        setT5Status('❌ Transformers.js failed to load. Try refreshing.');
-        $('load-t5-btn').disabled = false;
-        return;
-    }
+    multiImageIdx = idx;
+    const pg = multiImages[idx];
+    pdfPageNum = idx + 1;
+    updateMultiImageNav();
 
-    setT5Status('📥 Downloading T5 model (~60MB, one-time download)...');
+    const canvas = $('output-canvas');
+    canvas.width  = pg.width;
+    canvas.height = pg.height;
 
-    try {
-        t5Corrector = await window.transformersPipeline(
-            'text2text-generation',
-            'Xenova/t5-small',
-            {
-                progress_callback: (p) => {
-                    if (p.status === 'downloading') {
-                        const pct = p.loaded && p.total
-                            ? Math.round((p.loaded / p.total) * 100)
-                            : '?';
-                        setT5Status(`📥 Downloading model: ${pct}%...`);
-                    }
-                }
-            }
-        );
+    await new Promise(resolve => {
+        const blob = new Blob([pg.bytes]);
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => {
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            canvas.style.display = 'block';
+            $('canvas-placeholder').style.display = 'none';
+            URL.revokeObjectURL(url);
+            resolve();
+        };
+        img.src = url;
+    });
 
-        setT5Status('✅ Model ready! Click "Fix with AI" after OCR.');
-        $('load-t5-btn').textContent = '✅ Model loaded';
-        if (allOCRRegions.length > 0) $('run-t5-btn').disabled = false;
+    currentImageData = { bytes: pg.bytes, width: pg.width, height: pg.height };
+    $('img-page-label').textContent = `Page ${idx + 1} / ${multiImages.length}`;
 
-    } catch (err) {
-        setT5Status('❌ Failed to load model: ' + err.message);
-        $('load-t5-btn').disabled = false;
-        console.error(err);
-    }
-});
-
-// Run T5 correction on transcript
-$('run-t5-btn').addEventListener('click', async () => {
-    if (!t5Corrector || allOCRRegions.length === 0) return;
-
-    $('run-t5-btn').disabled = true;
-    $('revert-btn').disabled = true;
-    preCorrectText = $('transcript').value;
-
-    const regions = allOCRRegions.filter(r => r.text && r.text.trim().length > 2);
-    setT5Status(`🤖 Correcting ${regions.length} region(s)...`);
-
-    try {
-        for (let i = 0; i < regions.length; i++) {
-            const region = regions[i];
-            setT5Status(`🤖 Correcting region ${i+1} of ${regions.length}...`);
-
-            // T5 prompt for OCR correction
-            const prompt = `fix ocr errors: ${region.text}`;
-
-            const output = await t5Corrector(prompt, {
-                max_new_tokens: 128,
-                num_beams: 2,
-            });
-
-            const corrected = output[0]?.generated_text?.trim();
-            if (corrected && corrected.length > 0 && corrected.length < region.text.length * 3) {
-                region.text = corrected;
-            }
+    if (allPagesDetected) {
+        const pageData = allPagesData[idx];
+        if (pageData) {
+            activateEditor(pageData.detectionResult, pageData.imgBytes);
+            editorRegions = pageData.editorRegions.map(r => ({...r, bbox: [...r.bbox]}));
+            redrawEditor();
+            setStatus(`✏️ Page ${idx+1} — edit regions, then OCR All.`);
         }
+    } else if (pyodide) {
+        setStatus(`✓ Page ${idx+1} of ${multiImages.length} ready. Click DETECT REGIONS.`);
+    }
+}
 
-        // Rebuild transcript
-        const lines = [];
-        let curPanel = -1;
-        allOCRRegions.forEach(region => {
-            if (region.text) {
-                const panelIdx = currentResults?.panels?.findIndex(
-                    p => p.regions?.some(r => r === region)) ?? -1;
-                if (panelIdx !== curPanel) {
-                    lines.push(`\n[Panel ${panelIdx}]`);
-                    curPanel = panelIdx;
-                }
-                lines.push(`  [${region.type}]: ${region.text}`);
-            }
-        });
+function updateMultiImageNav() {
+    $('img-prev').disabled = multiImageIdx <= 0;
+    $('img-next').disabled = multiImageIdx >= multiImages.length - 1;
+}
 
-        $('transcript').value = lines.join('\n').trim();
-        setT5Status('✅ AI correction complete!');
-        $('revert-btn').disabled = false;
-        $('run-t5-btn').disabled = false;
-
-    } catch (err) {
-        setT5Status('❌ Correction error: ' + err.message);
-        console.error(err);
-        $('run-t5-btn').disabled = false;
+$('img-prev') && $('img-prev').addEventListener('click', async () => {
+    if (allPagesDetected) {
+        const curIdx = getAllPagesIdx();
+        if (curIdx > 0) await showPageInEditor(curIdx - 1);
+    } else if (multiImageIdx > 0) {
+        await showMultiImagePage(multiImageIdx - 1);
+    }
+});
+$('img-next') && $('img-next').addEventListener('click', async () => {
+    if (allPagesDetected) {
+        const curIdx = getAllPagesIdx();
+        if (curIdx < allPagesData.length - 1) await showPageInEditor(curIdx + 1);
+    } else if (multiImageIdx < multiImages.length - 1) {
+        await showMultiImagePage(multiImageIdx + 1);
     }
 });
 
-// Revert to pre-correction text
-$('revert-btn').addEventListener('click', () => {
-    if (preCorrectText !== null) {
-        $('transcript').value = preCorrectText;
-        setT5Status('↩ Reverted to pre-AI text.');
-        $('revert-btn').disabled = true;
-    }
-});
+// Wire detect/OCR all for image documents
+setTimeout(() => {
+    $('detect-all-img-btn') && $('detect-all-img-btn').addEventListener('click', () => {
+        // Reuse detectAllPages but sourcing from multiImages
+        detectAllPages({ sourceType: 'images' });
+    });
+    $('ocr-all-img-btn') && $('ocr-all-img-btn').addEventListener('click', ocrAllPages);
+}, 0);
 
 // ═══════════════════════════════════════════════════════════════
 // Boot
