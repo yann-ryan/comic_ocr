@@ -463,12 +463,8 @@ select, input[type="text"] {
                 <label><input type="radio" name="ocr" value="tesseract" checked>
                     Tesseract.js <span style="font-size:0.75rem;opacity:0.7">(recommended)</span>
                 </label>
-                <label><input type="radio" name="ocr" value="trocr">
-                    TrOCR <span style="font-size:0.75rem;opacity:0.7">(experimental)</span>
-                </label>
-                <label><input type="radio" name="ocr" value="hybrid">
-                    Hybrid <span style="font-size:0.75rem;opacity:0.7">(experimental)</span>
-                </label>
+                <!-- TrOCR removed -->
+                <!-- Hybrid removed -->
             </div>
 
             <label class="field-label" style="margin-top:12px">Tesseract page mode</label>
@@ -485,7 +481,7 @@ select, input[type="text"] {
                 Try <b>PSM 11</b> for SFX and floating text.
             </div>
 
-            <div id="trocr-controls" style="display:none;margin-top:10px;padding-top:10px;
+            <div id="trocr-controls" style="display:none" style="display:none;margin-top:10px;padding-top:10px;
                 border-top:2px dashed var(--ink)">
                 <label class="field-label">TrOCR model</label>
                 <select id="trocr-model" style="width:100%;padding:5px 8px;border:2px solid var(--ink);
@@ -530,17 +526,9 @@ select, input[type="text"] {
                 <span class="slider-val" id="nms-val">0.30</span>
             </div>
 
-            <label class="field-label">Left Edge Exclusion</label>
-            <div class="slider-row">
-                <input type="range" id="left-margin" min="0" max="0.15" value="0.06" step="0.01">
-                <span class="slider-val" id="left-margin-val">0.06</span>
-            </div>
-
-            <label class="field-label">Right Edge Exclusion</label>
-            <div class="slider-row">
-                <input type="range" id="right-margin" min="0" max="0.15" value="0.0" step="0.01">
-                <span class="slider-val" id="right-margin-val">0.00</span>
-            </div>
+            <!-- Edge exclusion removed -->
+            <input type="hidden" id="left-margin" value="0">
+            <input type="hidden" id="right-margin" value="0">
 
             <div style="margin-top:12px;border-top:2px dashed var(--ink);padding-top:10px">
             <span class="panel-title" style="font-size:0.8rem">✏️ TEXT DETECTION</span>
@@ -622,12 +610,14 @@ select, input[type="text"] {
                         style="background:var(--yellow);border:2px solid black">✋ Select</button>
                     <button class="btn-download" id="tool-draw">✏️ Draw new</button>
                     <button class="btn-download" id="tool-delete">🗑 Delete selected</button>
+                    <button class="btn-download" id="tool-panels" style="background:#dbeafe">🗂 Edit panels</button>
                     <select id="region-type-select"
                         style="padding:4px 8px;border:2px solid var(--ink);border-radius:3px;
                                font-family:Comic Neue,cursive;background:#fffff8;font-size:0.85rem">
                         <option value="bubble">Bubble</option>
                         <option value="caption">Caption</option>
                         <option value="floating">Floating</option>
+                        <option value="panel">Panel</option>
                     </select>
                     <button class="btn-download" id="tool-set-type">Set type</button>
                 </div>
@@ -1701,14 +1691,17 @@ function redrawEditor() {
 
     // Draw all regions
     for (let i = 0; i < editorRegions.length; i++) {
-        const { bbox, type } = editorRegions[i];
+        const { bbox, type, isPanel } = editorRegions[i];
         const [rx, ry, rw, rh] = bbox;
         const col = COLOURS[type] || '#888';
         const isSelected = i === selectedIdx;
 
         ctx.strokeStyle = col;
         ctx.lineWidth   = isSelected ? 3 : 2;
+        if (isPanel && !showPanels) continue;
+        if (isPanel) ctx.setLineDash([8, 4]);
         ctx.strokeRect(rx, ry, rw, rh);
+        ctx.setLineDash([]);
 
         // Dim fill on selected
         if (isSelected) {
@@ -1899,11 +1892,21 @@ $('tool-delete').addEventListener('click', () => {
         selectedIdx = -1;
         redrawEditor();
     }
-});
+})
+
+let showPanels = true;
+$('tool-panels').addEventListener('click', () => {
+    showPanels = !showPanels;
+    $('tool-panels').style.background = showPanels ? '#dbeafe' : '#f3f4f6';
+    $('tool-panels').textContent = showPanels ? '🗂 Edit panels' : '🗂 Panels hidden';
+    redrawEditor();
+});;
 
 $('tool-set-type').addEventListener('click', () => {
     if (selectedIdx >= 0) {
-        editorRegions[selectedIdx].type = $('region-type-select').value;
+        const newType = $('region-type-select').value;
+        editorRegions[selectedIdx].type = newType;
+        editorRegions[selectedIdx].isPanel = (newType === 'panel');
         redrawEditor();
     }
 });
@@ -1915,24 +1918,42 @@ $('output-canvas').addEventListener('mouseup',   onMouseUp);
 $('output-canvas').addEventListener('mouseleave', onMouseUp);
 
 // ── Activate editor after detection ──────────────────────────────────────────
-function activateEditor(result, imageBytes) {
+async function activateEditor(result, imageBytes) {
     editorResult  = result;
     editorActive  = true;
     selectedIdx   = -1;
     currentTool   = 'select';
 
-    // Copy rendered page to base canvas
+    // Draw clean image (no annotations) onto base canvas
     const overlay = $('output-canvas');
     const base    = $('base-canvas');
     base.width    = overlay.width;
     base.height   = overlay.height;
-    base.style.display = 'none';   // hidden — just a snapshot
+    base.style.display = 'none';
 
-    // Draw the clean image onto base canvas
-    base.getContext('2d').drawImage(overlay, 0, 0);
+    await new Promise(resolve => {
+        const blob = new Blob([imageBytes]);
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => {
+            base.getContext('2d').drawImage(img, 0, 0, base.width, base.height);
+            URL.revokeObjectURL(url);
+            resolve();
+        };
+        img.src = url;
+    });
 
     // Flatten all regions into editorRegions
     editorRegions = [];
+    // Add panel bboxes (dashed blue, editable like regions)
+    for (let pi = 0; pi < result.panels.length; pi++) {
+        editorRegions.push({
+            bbox:     [...result.panels[pi].bbox],
+            type:     'panel',
+            panelIdx: pi,
+            isPanel:  true,
+        });
+    }
     for (let pi = 0; pi < result.panels.length; pi++) {
         for (const region of result.panels[pi].regions) {
             editorRegions.push({
@@ -1961,7 +1982,8 @@ function applyEditorToResult(result) {
     for (const panel of result.panels) panel.regions = [];
 
     for (const er of editorRegions) {
-        const pi = Math.min(er.panelIdx, result.panels.length - 1);
+        if (er.isPanel) continue;
+        const pi = Math.min(er.panelIdx ?? 0, result.panels.length - 1);
         if (!result.panels[pi]) continue;
         result.panels[pi].regions.push({
             type:  er.type,
@@ -2180,7 +2202,7 @@ detect_pipeline(
         setTimeout(() => setProgress(0), 800);
 
         // Hand off to editor
-        activateEditor(result, currentImageData.bytes);
+        await activateEditor(result, currentImageData.bytes);
 
     } catch (err) {
         setStatus('❌ Detection error: ' + err.message, true);
@@ -2508,7 +2530,7 @@ async function showPageInEditor(idx) {
                          width: visCanvas.width, height: visCanvas.height };
 
     // Activate editor with this page's regions
-    activateEditor(pageData.detectionResult, pageData.imgBytes);
+    await activateEditor(pageData.detectionResult, pageData.imgBytes);
     // Override editorRegions with the stored (possibly edited) ones
     editorRegions = pageData.editorRegions.map(r => ({...r, bbox: [...r.bbox]}));
     redrawEditor();
@@ -3317,7 +3339,7 @@ async function showMultiImagePage(idx) {
     if (allPagesDetected) {
         const pageData = allPagesData[idx];
         if (pageData) {
-            activateEditor(pageData.detectionResult, pageData.imgBytes);
+            await activateEditor(pageData.detectionResult, pageData.imgBytes);
             editorRegions = pageData.editorRegions.map(r => ({...r, bbox: [...r.bbox]}));
             redrawEditor();
             setStatus(`✏️ Page ${idx+1} — edit regions, then OCR All.`);
