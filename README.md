@@ -1,68 +1,58 @@
 # Comic OCR
 
-A browser-based OCR pipeline for comic books and manga. No server required — everything runs locally in your browser using WebAssembly.
+Turns comic and manga pages into transcripts you can use for text analysis.
 
-🔗 **Live demo:** https://yann-ryan.github.io/comic_ocr/
+**Use it here:** https://yann-ryan.github.io/comic_ocr/
 
-## Features
+1. Open the link (Chrome, Edge or Firefox on a laptop or desktop).
+2. Drop in some pages (JPG, PNG or WebP).
+3. Choose the reading direction: left to right for Western comics, right to
+   left for manga.
+4. Click **Transcribe**, then download the transcript as CSV, JSON or plain text.
 
-- **Automatic text detection** — finds speech bubbles, captions, and floating text using OpenCV (via Pyodide/WASM)
-- **Panel detection & editing** — detects page panels automatically; add, move, resize or delete panels in the editor
-- **Interactive bounding box editor** — select, move, resize, draw new, and delete regions before running OCR
-- **Region types** — classify regions as Bubble, Caption, Floating, or Panel
-- **Multi-page support** — load a PDF or multiple images as a document; detect and OCR all pages, navigate between them to edit
-- **Tesseract OCR** — runs entirely in the browser via Tesseract.js
-- **Tunable detection** — sliders for brightness threshold, panel area, NMS, stroke filters, and more
-- **Download results** — export transcript as JSON, CSV, or plain text; download annotated images
+Each line of text comes out in reading order and tagged as **dialogue**,
+**caption**, **sfx** (sound effect) or **other** (page numbers, signs). By
+default the downloads contain dialogue and captions only.
 
-## Usage
+## Your pages stay on your computer
 
-1. Open the app in a browser (Chrome or Edge recommended)
-2. Drop a comic page image (JPG/PNG/TIFF) or PDF onto the upload zone
-3. Click **🔍 DETECT REGIONS** — OpenCV finds text blocks
-4. Edit the detected boxes if needed (select, move, resize, draw new)
-5. Click **⚡ RUN OCR** — Tesseract reads the text
-6. Download the transcript
+Everything runs inside your browser tab. Your pages are not uploaded
+anywhere: the site only downloads its own code and models (about 25 MB, once;
+the browser caches them).
 
-### Multi-page documents
+## How well does it work?
 
-- Select multiple images or a PDF to load as a document
-- Use **🔍 DETECT ALL PAGES** to process every page
-- Navigate between pages to review/edit regions
-- Use **⚡ OCR ALL PAGES** to transcribe everything at once
+Tested on 32 hand-transcribed pages from six US comics and nine English
+translated manga (12 of them held back and only used for the final check):
 
-### Tuning parameters
+| | held-out pages |
+|---|---|
+| words correctly recovered (F1) | 0.97 |
+| speech bubbles / captions read correctly | 96% |
+| stray words per page | 2 |
 
-| Slider | Effect |
-|--------|--------|
-| Brightness | Threshold for bubble background brightness |
-| Min panel size | Minimum panel area as fraction of page |
-| NMS threshold | Controls overlap merging of detected regions |
-| Min letter strokes | Minimum ink components per text block |
-| Min stroke width | Filters out very thin lines (hatching) |
-| Min ink density | Minimum ink fill ratio in a text block |
-| Line gap % | Vertical merging distance — raise for large bold manga text |
+Speed is roughly 5-15 seconds per page on an ordinary laptop.
 
-## Technical details
+Known weak spots: panels with slanted borders or double-page spreads can come
+out in the wrong order; captions without a box (floating narration) are
+tagged as dialogue; most drawn sound effects are skipped on purpose.
 
-- **Detection:** Python + OpenCV running in [Pyodide](https://pyodide.org/) (WebAssembly)
-- **OCR:** [Tesseract.js](https://tesseract.projectnaptha.com/)
-- **PDF rendering:** [PDF.js](https://mozilla.github.io/pdf.js/)
-- No build step — single self-contained HTML file
-- All processing happens client-side; no data is sent to any server
+## How it works
 
-## Browser compatibility
+1. A trained detector finds text blocks and speech bubbles on the page.
+2. PaddleOCR models find the lines in each block and read them.
+3. A dictionary pass fixes typical comic-lettering misreadings
+   ("YOLI" -> "YOU") and splits run-together words.
+4. The page is cut into panels at the gutters, and text is put in reading
+   order.
+5. Text in rectangular boxes is tagged as caption, the rest as dialogue.
 
-Works best in **Chrome** or **Edge**. Firefox works but may be slower. Safari has limited WebAssembly support.
+All models run with ONNX Runtime Web (WebAssembly). See
+THIRD_PARTY_NOTICES.md for model and library credits and licences.
 
-> **Note:** First load downloads ~30MB of WebAssembly libraries (OpenCV, Tesseract language data). Subsequent loads use the browser cache.
+## Running it yourself
 
-## Limitations
-
-- OCR quality depends on image resolution and font style
-- Works best on scanned comics at 150+ DPI
-- Manga with highly stylised fonts may need PSM tuning (try PSM 6 or PSM 11)
-
-## License
-
-MIT
+The site is plain static files. Serve the folder with any web server, for
+example `python3 -m http.server` and open http://localhost:8000/. Opening
+index.html directly as a file will not work (browsers block the model
+downloads).
